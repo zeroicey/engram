@@ -19,10 +19,10 @@ function agentSkillFile(spec: SkillSpec, sourcePath: string): string {
 
 /** Slash-command template: `ARGUMENTS` placeholder becomes the tool's own syntax. */
 function promptTemplate(spec: SkillSpec, sourcePath: string, frontmatter: 'slash' | 'copilot'): string {
-  const body = spec.body.trim().replace(/ARGUMENTS/g, '$ARGUMENTS');
+  const body = substituteArgs(spec.body, '$ARGUMENTS');
   const fm =
     frontmatter === 'copilot'
-      ? ['---', 'mode: agent', `description: ${oneLine(spec.description)}`, '---'].join('\n')
+      ? ['---', 'agent: agent', `description: ${oneLine(spec.description)}`, '---'].join('\n')
       : [
           '---',
           `description: ${oneLine(spec.description)}`,
@@ -31,6 +31,16 @@ function promptTemplate(spec: SkillSpec, sourcePath: string, frontmatter: 'slash
         ].join('\n');
   return `${fm}\n\n${generatedHeader(sourcePath)}\n\n${body}\n`;
 }
+
+/**
+ * Replace only the delimited `<ARGUMENTS>` placeholder.
+ *
+ * The old version did a global replace of `ARGUMENTS`, which also rewrote the sentence that
+ * *documents* the placeholder — 16 generated carriers shipped "$ARGUMENTS: `$ARGUMENTS` is the
+ * optional topic slug", i.e. a garbled instruction about where to get the slug.
+ */
+export const substituteArgs = (body: string, token: string): string =>
+  body.replaceAll('<ARGUMENTS>', token);
 
 /** YAML single-quoted scalar; `'` is escaped by doubling, as the YAML spec requires. */
 function yamlString(value: string): string {
@@ -42,7 +52,7 @@ function tomlEscape(body: string): string {
 }
 
 function geminiCommand(spec: SkillSpec, sourcePath: string): string {
-  const body = tomlEscape(spec.body.trim().replace(/ARGUMENTS/g, '{{args}}'));
+  const body = tomlEscape(substituteArgs(spec.body, '{{args}}'));
   return [
     `# ${generatedHeader(sourcePath)}`,
     `description = "${oneLine(spec.description).replace(/"/g, '\\"')}"`,
@@ -58,7 +68,7 @@ function geminiCommand(spec: SkillSpec, sourcePath: string): string {
 export function commandNameFor(sink: SkillSink, spec: SkillSpec): string {
   switch (sink.kind) {
     case 'agent-skills':
-      return `/skill:${spec.name}`;
+      return sink.invoke === 'plain' ? `/${spec.name}` : `/skill:${spec.name}`;
     case 'prompt-md-args':
       return `/${sink.prefix ?? ''}${spec.name}`;
     case 'prompt-toml':
@@ -75,7 +85,7 @@ export function materialize(sink: SkillSink, specs: SkillSpec[], sourceDir = '.a
         return { path: path.posix.join(sink.dir, spec.name, 'SKILL.md'), content: agentSkillFile(spec, sourcePath) };
       case 'prompt-md-args':
         return {
-          path: path.posix.join(sink.dir, `${sink.prefix ?? ''}${spec.name}.md`),
+          path: path.posix.join(sink.dir, `${sink.prefix ?? ''}${spec.name}${sink.suffix ?? '.md'}`),
           content: promptTemplate(spec, sourcePath, sink.frontmatter ?? 'slash'),
         };
       case 'prompt-toml':

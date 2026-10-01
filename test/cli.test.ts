@@ -108,3 +108,69 @@ test('dump without a bank exits 2', async (t) => {
   assert.equal(res.code, 2);
   assert.match(res.out, /engram init/);
 });
+
+test('REGRESSION dump --json emits parseable JSON on stdout even when it fails', async (t) => {
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  const res = await run(['dump', '--json', '--root', sb.root]);
+  assert.equal(res.code, 2);
+  const parsed = JSON.parse(res.out) as { error: string; bank: boolean };
+  assert.equal(parsed.bank, false);
+  assert.match(parsed.error, /engram init/);
+});
+
+test('REGRESSION sync on an uninitialised repo fails instead of reporting success', async (t) => {
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  const res = await run(['sync', '--root', sb.root]);
+  assert.equal(res.code, 1, 'a green exit here makes an agent believe the contract is installed');
+  assert.match(res.out, /missing\s+AGENTS\.md/, 'absent files must say "missing", not "unchanged"');
+});
+
+test('REGRESSION sync --tools with a typo is reported', async (t) => {
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  const res = await run(['sync', '--tools', 'bogus', '--root', sb.root]);
+  assert.equal(res.code, 1);
+});
+
+test('REGRESSION the installed (symlinked) bin still runs', async (t) => {
+  // npm exposes `.bin/engram` as a symlink; without realpath the CLI exited 0 with no output.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await run(['init', '--tools', 'agents', '--root', sb.root]);
+  const link = path.join(sb.root, 'engram-bin');
+  await fs.symlink(path.resolve('build/src/cli.js'), link);
+  const { execFile } = await import('node:child_process');
+  const out = await new Promise<string>((resolve, reject) => {
+    execFile(process.execPath, [link, '--version'], (err, stdout) =>
+      err ? reject(err) : resolve(stdout.trim()),
+    );
+  });
+  assert.match(out, /^\d+\.\d+\.\d+$/, 'the symlinked entry point produced no version');
+});
+
+test('REGRESSION init --force really regenerates a rule file', async (t) => {
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await sb.write('AGENTS.md', '# Human rules\n\nNever touch deploy.\n');
+  const plain = await run(['init', '--tools', 'agents', '--root', sb.root]);
+  assert.equal(plain.code, 0);
+  const preserved = await sb.read('AGENTS.md');
+  assert.ok(preserved.includes('Never touch deploy.'), 'default init preserves human content');
+
+  const forced = await run(['init', '--tools', 'agents', '--force', '--root', sb.root]);
+  assert.equal(forced.code, 0);
+  const regenerated = await sb.read('AGENTS.md');
+  assert.ok(!regenerated.includes('Never touch deploy.'), '--force must replace the stubbed body');
+  assert.ok(regenerated.includes('engram:contract:start'), 'and still install the contract');
+});
+
+test('dump --out writes the requested format', async (t) => {
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await run(['init', '--tools', 'agents', '--root', sb.root]);
+  await run(['dump', '--json', '--out', 'snap.json', '--root', sb.root]);
+  const written = JSON.parse(await sb.read('snap.json')) as { project: string };
+  assert.equal(typeof written.project, 'string');
+});

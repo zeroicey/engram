@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { TOOLS, getTool, ruleFilesFor } from '../src/adapters/index.js';
-import { materialize } from '../src/adapters/skills.js';
+import { commandNameFor, materialize } from '../src/adapters/skills.js';
 import { SKILL_SPECS } from '../src/templates/skills.js';
 import { AI_CONTRACT } from '../src/templates/contract.js';
 
@@ -57,7 +57,7 @@ test('skill carriers rewrite the ARGUMENTS token per tool', () => {
 test('every materialised file declares its canonical source and the generated marker', () => {
   for (const sink of [
     { kind: 'agent-skills', dir: '.agents/skills' },
-    { kind: 'prompt-md-args', dir: '.github/prompts', frontmatter: 'copilot' },
+    { kind: 'prompt-md-args', dir: '.github/prompts', suffix: '.prompt.md', frontmatter: 'copilot' },
   ] as const) {
     for (const file of materialize(sink, SKILL_SPECS)) {
       assert.ok(
@@ -83,19 +83,63 @@ test('slash-command frontmatter parses as YAML for every skill', () => {
   }
 });
 
-test('copilot prompt files use mode: agent frontmatter, not argument-hint', () => {
+test('copilot prompt files use the official .prompt.md name and agent: frontmatter', () => {
+  // Corrections from a docs fact-check: the filename must be <name>.prompt.md (a bare .md is
+  // not registered) and the frontmatter key is `agent:`, not `mode:`.
   const [file] = materialize(
-    { kind: 'prompt-md-args', dir: '.github/prompts', frontmatter: 'copilot' },
+    { kind: 'prompt-md-args', dir: '.github/prompts', suffix: '.prompt.md', frontmatter: 'copilot' },
     SKILL_SPECS,
   );
   assert.ok(file);
-  assert.match(file.content, /^---\nmode: agent\n/m);
+  assert.equal(file.path, '.github/prompts/handoff.prompt.md');
+  assert.match(file.content, /^---\nagent: agent\n/m);
+  assert.ok(!file.content.includes('mode: agent'), 'there is no `mode:` key in prompt-file frontmatter');
   assert.ok(!file.content.includes('argument-hint'));
 });
 
-test('tools without native skill support rely on the contract fallback', () => {
+test('codex does support project skills, so it gets an .agents/skills sink', () => {
   const codex = getTool('codex');
   assert.ok(codex);
-  assert.deepEqual(codex.skillSinks, []);
+  assert.ok(codex.skillSinks.length > 0, 'Codex scans .agents/skills from cwd to the repo root');
+  assert.equal(codex.skillSinks[0]?.dir, '.agents/skills');
+});
+
+test('claude has no .claude/commands sink, because a same-named skill shadows it', () => {
+  const claude = getTool('claude');
+  assert.ok(claude);
+  const dirs = claude.skillSinks.map((sk) => sk.dir);
+  assert.ok(dirs.includes('.claude/skills'));
+  assert.ok(!dirs.includes('.claude/commands'), 'the command file would be permanently dead');
+});
+
+test('skill invocation syntax is per-tool, not hardcoded /skill:', () => {
+  const spec = SKILL_SPECS[0];
+  assert.ok(spec);
+  const claude = getTool('claude')?.skillSinks[0];
+  const pi = getTool('pi')?.skillSinks[0];
+  assert.ok(claude && pi);
+  assert.equal(commandNameFor(claude, spec), '/handoff', 'Claude invokes skills as /name');
+  assert.equal(commandNameFor(pi, spec), '/skill:handoff', '/skill: is Pi-specific');
+});
+
+test('REGRESSION the ARGUMENTS placeholder does not rewrite its own documentation', () => {
+  // The old global replace produced "$ARGUMENTS: `$ARGUMENTS` is the optional topic slug"
+  // across 16 generated carriers: a garbled instruction about where to get the slug.
+  for (const file of materialize({ kind: 'prompt-md-args', dir: '.claude/commands' }, SKILL_SPECS)) {
+    assert.ok(file.content.includes('$ARGUMENTS'), `${file.path} must substitute the placeholder`);
+    assert.ok(
+      !/\$ARGUMENTS:\s*`\$ARGUMENTS`/.test(file.content),
+      `${file.path} rewrote the sentence that documents the placeholder`,
+    );
+  }
+  for (const file of materialize({ kind: 'prompt-toml', dir: '.gemini/commands' }, SKILL_SPECS)) {
+    assert.ok(!/\{\{args\}\}:\s*`\{\{args\}\}`/.test(file.content), `${file.path} has the same defect`);
+  }
+});
+
+test('tools without native skill support rely on the contract fallback', () => {
+  const windsurf = getTool('windsurf');
+  assert.ok(windsurf);
+  assert.deepEqual(windsurf.skillSinks, [], 'Windsurf has no project-scoped skill mechanism');
   assert.ok(AI_CONTRACT.includes('.ai/skills/*.md'), 'contract must name the passive fallback');
 });

@@ -26,7 +26,7 @@ export const SKILL_SPECS: SkillSpec[] = [
     body: `Compress everything that matters about this session into the memory bank so the next
 session starts warm. Never dump a transcript; reconstruct state.
 
-ARGUMENTS: \`ARGUMENTS\` is the optional topic slug. If absent, derive one from the dominant task.
+ARGUMENTS: \`<ARGUMENTS>\` is the optional topic slug. If absent, derive one from the dominant task.
 
 ## Procedure
 
@@ -61,7 +61,7 @@ Do not paste the file body back into chat.`,
     body: `Store one failure mode well enough that a future session recognises it before burning
 time on it again. A pitfall without a guard is a diary entry; require the guard.
 
-ARGUMENTS: \`ARGUMENTS\` is the case slug. If absent, propose one from the symptom and confirm.
+ARGUMENTS: \`<ARGUMENTS>\` is the case slug. If absent, propose one from the symptom and confirm.
 
 ## Procedure
 
@@ -93,7 +93,7 @@ Case path, one-line cause, one-line guard. Nothing else.`,
     body: `Capture one decision with enough alternatives and consequences that it is never
 re-litigated from scratch. This replaces ad-hoc ideas directories and ad-hoc chat plans.
 
-ARGUMENTS: \`ARGUMENTS\` is the topic slug. If absent, derive it from the choice under discussion.
+ARGUMENTS: \`<ARGUMENTS>\` is the topic slug. If absent, derive it from the choice under discussion.
 
 ## Procedure
 
@@ -126,7 +126,7 @@ File path, status, and the question still open (if PROPOSAL) that needs a verdic
     body: `Find where the bank and the code have drifted, and report it as a short, ranked list of
 concrete fixes. An audit that only says "docs look fine" is a failed audit.
 
-ARGUMENTS: \`ARGUMENTS\` optionally narrows the audit to a path or subsystem.
+ARGUMENTS: \`<ARGUMENTS>\` optionally narrows the audit to a path or subsystem.
 
 ## Procedure
 

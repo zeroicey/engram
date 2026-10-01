@@ -30,13 +30,17 @@ test('init creates the bank, rule files, carriers and the bootstrap prompt', asy
     '.windsurf/rules/engram-memory.md',
     '.github/copilot-instructions.md',
     '.gemini/commands/handoff.toml',
-    '.claude/commands/handoff.md',
+    '.github/prompts/handoff.prompt.md',
+    '.claude/skills/handoff/SKILL.md',
     '.pi/skills/handoff/SKILL.md',
+    '.pi/prompts/handoff.md',
+    '.agents/skills/handoff/SKILL.md',
     '.engram/BOOTSTRAP.md',
   ]) {
     assert.ok(await sb.exists(rel), `init did not create ${rel}`);
   }
 
+  assert.equal(await sb.exists('.claude/commands/handoff.md'), false, 'a skill shadows a same-named command');
   const bootstrap = await sb.read('.engram/BOOTSTRAP.md');
   assert.ok(bootstrap.includes('widget'), 'project name from package.json is used');
   assert.ok(bootstrap.includes('AGENTS.md') && bootstrap.includes('CLAUDE.md'));
@@ -61,7 +65,7 @@ test('init is idempotent: a second run creates nothing and changes nothing', asy
   t.after(() => sb.cleanup());
   await runInit({ root: sb.root, toolIds: ['agents', 'claude'] });
   const snapshot = new Map<string, string>();
-  for (const rel of ['AGENTS.md', 'CLAUDE.md', '.ai/README.md', '.claude/commands/handoff.md']) {
+  for (const rel of ['AGENTS.md', 'CLAUDE.md', '.ai/README.md', '.claude/skills/handoff/SKILL.md']) {
     snapshot.set(rel, await sb.read(rel));
   }
 

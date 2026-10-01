@@ -17,6 +17,12 @@ export interface DumpResult extends Fingerprint {
   /** Non-zero when the repository has no `.ai/` bank yet. */
   exitCode: number;
   hint?: string;
+  /**
+   * Bank paths that exist but could not be read. A non-empty list means the fingerprint is
+   * *partial*, not empty: reporting "no binding decisions" because a directory was unreadable
+   * is the most damaging thing this tool could do.
+   */
+  readErrors: string[];
 }
 
 export async function runDump(opts: DumpOptions): Promise<DumpResult> {
@@ -28,6 +34,7 @@ export async function runDump(opts: DumpOptions): Promise<DumpResult> {
       truncated: false,
       exitCode: 2,
       hint: `No .ai/ memory bank at ${path.join(opts.root, '.ai')}. Run \`engram init\` first.`,
+      readErrors: bank.readErrors,
       data: {
         project: path.basename(opts.root),
         generated: new Date().toISOString(),
@@ -52,7 +59,7 @@ export async function runDump(opts: DumpOptions): Promise<DumpResult> {
     proposals: opts.proposals,
     pitfalls: opts.pitfalls,
   });
-  return { ...fp, exitCode: 0 };
+  return { ...fp, exitCode: 0, readErrors: bank.readErrors };
 }
 
 export interface DumpCliOptions extends DumpOptions {

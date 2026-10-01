@@ -11,12 +11,20 @@ export type RuleFileKind = 'agents' | 'claude' | 'cursor' | 'windsurf' | 'copilo
 
 /** Where a canonical skill spec (`.ai/skills/<name>.md`) gets materialised. */
 export type SkillSink =
-  | { kind: 'agent-skills'; dir: string; note?: string }
+  | {
+      kind: 'agent-skills';
+      dir: string;
+      /** How the tool exposes the command: Pi uses `/skill:name`, Claude/Cursor use `/name`. */
+      invoke?: 'skill-prefixed' | 'plain';
+      note?: string;
+    }
   | {
       kind: 'prompt-md-args';
       dir: string;
       prefix?: string;
-      /** `slash` → description + argument-hint; `copilot` → mode + description. */
+      /** Filename suffix. Copilot requires `<name>.prompt.md`; a bare `.md` is not registered. */
+      suffix?: string;
+      /** `slash` → description + argument-hint; `copilot` → agent + description. */
       frontmatter?: 'slash' | 'copilot';
       note?: string;
     }
@@ -81,9 +89,17 @@ export const TOOLS: ToolDef[] = [
         note: 'Codex reads AGENTS.md from the repo root downwards.',
       },
     ],
-    skillSinks: [],
+    skillSinks: [
+      {
+        kind: 'agent-skills',
+        dir: '.agents/skills',
+        invoke: 'plain',
+        note: 'Codex scans `.agents/skills` from cwd up to the repo root (same dir as the `agents` tool).',
+      },
+    ],
     notes: [
-      'Codex has no project-scoped skills. User-level prompts: `~/.codex/prompts/<name>.md`.',
+      'Codex supports project skills under `.agents/skills/`; the shared dir dedupes with the `agents` tool.',
+      'User-level `~/.codex/prompts/<name>.md` still works but is deprecated in favour of skills.',
       'Say explicitly in AGENTS.md which commands need network/elevated sandbox; Codex sandboxes by default.',
     ],
     styleGuide: `- Lead with the sandbox model: what Codex may run without approval, what needs it.
@@ -103,8 +119,14 @@ export const TOOLS: ToolDef[] = [
       },
     ],
     skillSinks: [
-      { kind: 'agent-skills', dir: '.claude/skills', note: 'Native Agent Skills; invoked as /skill:<name>.' },
-      { kind: 'prompt-md-args', dir: '.claude/commands', note: 'Slash commands: /handoff, /audit, …' },
+      {
+        kind: 'agent-skills',
+        dir: '.claude/skills',
+        invoke: 'plain',
+        note: 'Native Agent Skills, invoked as /<name>.',
+      },
+      // No `.claude/commands` sink on purpose: when a skill and a command share a name the skill
+      // wins, so the command file would be a permanently shadowed dead file.
     ],
     styleGuide: `- Concise and imperative; Claude follows short checklists better than prose essays.
 - Use the @-import feature (\`@.ai/ARCHITECTURE.md\`) instead of duplicating content.
@@ -123,11 +145,16 @@ export const TOOLS: ToolDef[] = [
       },
     ],
     skillSinks: [
-      { kind: 'agent-skills', dir: '.cursor/skills', note: 'Experimental skill support; harmless when unused.' },
+      {
+        kind: 'agent-skills',
+        dir: '.cursor/skills',
+        invoke: 'plain',
+        note: 'Project-level skills; `.agents/skills/` is honoured as well.',
+      },
     ],
     styleGuide: `- \`.mdc\` files need frontmatter: \`description\`, \`globs\`, \`alwaysApply\`.
 - One topic per rule file; keep each under ~500 lines and use \`@path\` references for depth.
-- Use \`globs\` for file-type-specific rules (e.g. \`**/*.test.ts\`), \`alwaysApply: true\` for the memory contract only.
+- Use \`globs\` for file-type-specific rules; for an always-on rule Cursor ignores \`globs\` and \`description\`, so emit \`alwaysApply: true\` alone.
 - Do not repeat content between rules — Cursor merges all matching rules and duplicates waste context.`,
   },
   {
@@ -142,8 +169,11 @@ export const TOOLS: ToolDef[] = [
       },
     ],
     skillSinks: [],
-    notes: ['Windsurf workflows live in `.windsurf/workflows/`; keep them stateless and defer state to `.ai/`.'],
-    styleGuide: `- Rule frontmatter: \`trigger: always_on | model_decision | manual\`, \`description\`, optional \`globs\`.
+    notes: [
+      'Windsurf now prefers `.devin/rules/` and `.devin/workflows/`; `.windsurf/rules/` remains supported.',
+      'Workspace rules are capped at ~12,000 characters per file — keep the appended contract short.',
+    ],
+    styleGuide: `- Rule frontmatter: \`trigger: always_on | model_decision | glob | manual\`, \`description\`, and \`globs:\` when the mode is \`glob\`.
 - Reserve \`always_on\` for the memory contract; everything else should be \`model_decision\`.
 - Short, imperative, one rule per bullet. Windsurf cascades rules from the workspace root down.`,
   },
@@ -167,14 +197,15 @@ export const TOOLS: ToolDef[] = [
       {
         kind: 'prompt-md-args',
         dir: '.github/prompts',
+        suffix: '.prompt.md',
         frontmatter: 'copilot',
-        note: 'Reusable prompt files: /handoff, /audit, …',
+        note: 'Reusable prompt files; available in VS Code, Visual Studio and JetBrains IDEs.',
       },
     ],
     styleGuide: `- Copilot instructions are short bullet lists; avoid narrative.
 - Use \`.instructions.md\` files with \`applyTo\` globs for anything path-specific.
 - Phrase as constraints ("never commit .env", "always run npm test before proposing a patch").
-- Do not exceed ~200 lines total; Copilot truncates long instruction sets.`,
+- Keep the two instruction files from duplicating each other: Copilot merges every matching file, so the same contract twice costs twice the tokens.`,
   },
   {
     id: 'gemini',
