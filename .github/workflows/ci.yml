@@ -35,6 +35,46 @@ jobs:
             n=$(grep -c 'engram:contract:start v' "$f")
             if [ "$n" -ne 1 ]; then echo "$f has $n contract blocks"; exit 1; fi
           done
-      - name: Publish dry run
+      - name: Verify the packed tarball actually installs and runs
+        # `npm pack --dry-run` only lists files. A files/bin/outDir mistake produces a broken
+        # published artifact while every other step stays green - exactly the class of bug in
+        # .ai/pitfalls/cases/tsc-wrong-outdir.md. Only installing the real tarball catches it.
         if: matrix.node == '22'
-        run: npm pack --dry-run
+        run: |
+          set -euo pipefail
+          tarball=$(npm pack --silent | tail -1)
+          work=$(mktemp -d)
+          cd "$work"
+          npm init -y >/dev/null
+          npm i "$OLDPWD/$tarball" --silent
+          npx engram --version
+          npx engram init --tools claude,pi
+          npx engram dump | head -2
+          npx engram sync >/dev/null
+          test -f CLAUDE.md && test -d .ai/skills
+          # idempotency of the published artifact
+          before=$(md5sum CLAUDE.md AGENTS.md | md5sum)
+          npx engram sync >/dev/null
+          after=$(md5sum CLAUDE.md AGENTS.md | md5sum)
+          test "$before" = "$after"
+      - name: A rule file must gain exactly one contract block after a repair
+        run: |
+          set -euo pipefail
+          f=$(mktemp)
+          printf '# Rules\n\nDocumenting `<!-- engram:contract:start -->` inline.\n' > "$f"
+          node -e "
+            const fs=require('fs');
+            const {renderRuleFile}=require('./build/src/adapters/rules.js');
+            fs.writeFileSync(process.argv[1], renderRuleFile(
+              {path:'AGENTS.md',kind:'agents',note:'ci'},
+              {projectName:'ci',alsoReadBy:[]}, fs.readFileSync(process.argv[1],'utf8')).content);
+          " "$f"
+          test "$(grep -c '^<!-- engram:contract:start v' "$f")" = 1
+          grep -q 'Documenting' "$f"
+          node -e "
+            const fs=require('fs');
+            const {refreshContract}=require('./build/src/adapters/rules.js');
+            fs.writeFileSync(process.argv[1], refreshContract(fs.readFileSync(process.argv[1],'utf8'),
+              {path:'AGENTS.md',kind:'agents',note:'ci'}).content);
+          " "$f"
+          test "$(grep -c '^<!-- engram:contract:start v' "$f")" = 1

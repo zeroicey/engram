@@ -46,5 +46,5 @@ real content. Remaining work is identity and release, not architecture.
 
 ## Next step
 
-Pick the npm/GitHub identity, publish `0.1.0`, and run `/handoff` in a live Pi session against this
+Pick the npm/GitHub identity, publish `0.2.0`, and run `/handoff` in a live Pi session against this
 repo to validate the adapter output with a real tool.

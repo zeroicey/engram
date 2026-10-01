@@ -19,7 +19,9 @@ function agentSkillFile(spec: SkillSpec, sourcePath: string): string {
 
 /** Slash-command template: `ARGUMENTS` placeholder becomes the tool's own syntax. */
 function promptTemplate(spec: SkillSpec, sourcePath: string, frontmatter: 'slash' | 'copilot'): string {
-  const body = substituteArgs(spec.body, '$ARGUMENTS');
+  // Copilot prompt files use VS Code variable syntax, not `$ARGUMENTS`; shipping the literal
+  // token would hand the model a garbled instruction instead of an argument.
+  const body = substituteArgs(spec.body, frontmatter === 'copilot' ? '${input:arguments}' : '$ARGUMENTS');
   const fm =
     frontmatter === 'copilot'
       ? ['---', 'agent: agent', `description: ${oneLine(spec.description)}`, '---'].join('\n')

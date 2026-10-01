@@ -52,7 +52,6 @@ export interface MemoryBank {
 }
 
 const DATE_RE = /^(\d{4}-\d{2}-\d{2})-(.+?)(\.md|-handoff\.md)$/;
-const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})/;
 
 /** A heading of any level, so a `####` subsection correctly ends a `##` section. */
 const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.*)$/;
@@ -84,7 +83,7 @@ const STATUS_LINE_RE = /^[^\S\n]*\**[^\S\n]*(?:status|state)\**[^\S\n]*:[^\S\n]*
 export function decisionStatus(content: string): DecisionStatus {
   const header = STATUS_LINE_RE.exec(content)?.[1] ?? '';
   const scope = header || content;
-  const m = /💭\s*PROPOSAL|✅\s*ACCEPTED|🪦\s*REJECTED|🔴\s*REJECTED/i.exec(scope);
+  const m = /💭\s*PROPOSAL|✅\s*ACCEPTED|🪦\s*REJECTED|\b(PROPOSAL|ACCEPTED|REJECTED)\b/i.exec(scope);
   if (!m?.[0]) return 'UNKNOWN';
   const s = m[0].toUpperCase();
   if (s.includes('PROPOSAL')) return 'PROPOSAL';
@@ -104,27 +103,54 @@ function severityOf(content: string): PitfallEntry['severity'] {
 const byDateDesc = (a: MemoryEntry, b: MemoryEntry): number =>
   b.date.localeCompare(a.date) || b.file.localeCompare(a.file);
 
-/** Lines of a document that are not inside a fenced code block, with heading level attached. */
+/** One source line, flagged when it is inert (inside a code fence or an HTML comment). */
 interface ContentLine {
   text: string;
   heading: number | null;
-  inFence: boolean;
+  inert: boolean;
 }
 
+const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})(.*)$/;
+
+/**
+ * Parse lines, flagging the inert ones.
+ *
+ * Tracking HTML-comment **state** (not just a line starting with `<!--`) is what fixes the shipped
+ * bug: `aiCurrentTask()`'s placeholders are multi-line comments, so their continuation lines used
+ * to survive into the fingerprint and every fresh `init` reported the template's own prose as the
+ * project's goal, branch, next action and blocker.
+ */
 function contentLines(content: string): ContentLine[] {
   const out: ContentLine[] = [];
-  let fence: string | null = null;
+  let fence: { char: string; len: number } | null = null;
+  let inComment = false;
+
   for (const raw of content.split('\n')) {
-    const fenceMatch = FENCE_RE.exec(raw);
-    const marker = fenceMatch?.[1]?.[0] ?? null;
-    if (fence === null && marker) fence = marker;
-    else if (fence !== null && marker === fence) fence = null;
-    const inFence = fence !== null;
-    const headingMatch = inFence ? null : HEADING_RE.exec(raw);
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw; // CRLF
+    const marker = inComment ? undefined : FENCE_RE.exec(line)?.[1];
+    const isDelimiter = marker !== undefined;
+    const inFence = fence !== null || isDelimiter;
+    // A comment *opener* marks its own line inert too: the template's placeholder prose starts
+    // with `<!--` on that line, and it was surfacing as the project's goal and next action.
+    const opensComment = !isDelimiter && !inComment && line.includes('<!--');
+    const inert = inFence || inComment || isDelimiter || opensComment;
+
+    if (fence !== null) {
+      if (isDelimiter && marker[0] === fence.char && marker.length >= fence.len) fence = null;
+    } else if (isDelimiter) {
+      fence = { char: marker[0]!, len: marker.length };
+    }
+
+    if (!isDelimiter) {
+      if (!inComment && line.includes('<!--')) inComment = true;
+      else if (inComment && line.includes('-->')) inComment = false;
+    }
+
+    const headingMatch = inert ? null : HEADING_RE.exec(line);
     out.push({
-      text: raw,
+      text: line,
       heading: headingMatch ? (headingMatch[1] ?? '').length : null,
-      inFence,
+      inert,
     });
   }
   return out;
@@ -144,7 +170,7 @@ function section(content: string, heading: string): string[] {
   const out: string[] = [];
 
   for (const line of lines) {
-    if (line.inFence) continue;
+    if (line.inert) continue;
     if (line.heading !== null) {
       const level = line.heading;
       const title = (HEADING_RE.exec(line.text)?.[2] ?? '')
@@ -165,7 +191,7 @@ function section(content: string, heading: string): string[] {
     }
     if (!inSection) continue;
     const t = line.text.trim();
-    if (!t || t.startsWith('<!--') || /^-{3,}$/.test(t)) continue;
+    if (!t || /^-{3,}$/.test(t)) continue;
     out.push(t);
   }
   return out;
@@ -173,7 +199,7 @@ function section(content: string, heading: string): string[] {
 
 const cleanInline = (s: string): string =>
   s
-    .replace(/<!--.*?-->/g, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/[*_`]/g, '')
     .replace(/\s+/g, ' ')
     .trim();

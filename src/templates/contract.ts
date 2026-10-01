@@ -70,33 +70,61 @@ export const GENERATED_MARKER = '<!-- engram:generated -->';
  */
 export const MANAGED_MARKER = '<!-- engram:managed -->';
 
-const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})/;
+const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})(.*)$/;
 
-/** Offset of a line inside the source text, plus whether it sits inside a fenced code block. */
+/** One source line, flagged when it is *inert*: inside a code fence or an HTML comment. */
 interface LineInfo {
   text: string;
   start: number;
   end: number;
-  inFence: boolean;
+  /** A marker on an inert line is documentation, never structure. */
+  inert: boolean;
 }
 
 /**
- * Split text into lines, flagging the ones that live inside fenced code blocks.
- * A documentation file that *shows* an engram marker inside a ``` fence must never have it
- * treated as the real thing — that is exactly how a scaffolder deletes user prose.
+ * Split text into lines and flag the inert ones.
+ *
+ * Three details here are load-bearing, each from a bug that actually shipped:
+ *
+ * - Fences compare by **length**, not by first character. CommonMark says a four-backtick block
+ *   is closed only by a fence of at least four backticks; comparing one character let a
+ *   three-backtick line close a four-backtick fence, so a marker inside it read as real and the
+ *   user's prose was deleted.
+ * - HTML comments are tracked as **state**. A documented marker inside a multi-line comment
+ *   otherwise made a rule file permanently unmanageable.
+ * - CRLF input is normalised, so Windows-authored files behave like Unix ones.
  */
 function scanLines(text: string): LineInfo[] {
   const lines: LineInfo[] = [];
-  let fence: string | null = null;
+  let fence: { char: string; len: number } | null = null;
+  let inComment = false;
   let offset = 0;
+
   for (const raw of text.split('\n')) {
-    const match = FENCE_RE.exec(raw);
-    if (fence === null && match?.[1]) {
-      fence = match[1][0] ?? '`';
-    } else if (fence !== null && match?.[1]?.[0] === fence) {
-      fence = null;
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    const marker = inComment ? undefined : FENCE_RE.exec(line)?.[1];
+    const isDelimiter = marker !== undefined;
+    const inFenceNow = fence !== null || isDelimiter;
+    // A marker line is structural *unless* it sits in a code fence. `<!-- engram:contract:start
+    // v1 -->` is written as an HTML comment, so treating any `<!--` as a comment opener made the
+    // contract invisible to its own parser; but the fence case must keep winning over both.
+    const structural =
+      !inFenceNow && (ownsMarker(line, CONTRACT_START) || ownsMarker(line, CONTRACT_END));
+    const opensComment = !isDelimiter && !inComment && line.includes('<!--');
+    const inert = !structural && (inFenceNow || inComment || opensComment);
+
+    if (fence !== null) {
+      if (isDelimiter && marker[0] === fence.char && marker.length >= fence.len) fence = null;
+    } else if (isDelimiter) {
+      fence = { char: marker[0]!, len: marker.length };
     }
-    lines.push({ text: raw, start: offset, end: offset + raw.length, inFence: fence !== null || Boolean(match?.[1]) });
+
+    if (!isDelimiter) {
+      if (!inComment && line.includes('<!--')) inComment = true;
+      else if (inComment && line.includes('-->')) inComment = false;
+    }
+
+    lines.push({ text: line, start: offset, end: offset + line.length, inert });
     offset += raw.length + 1; // +1 for the newline that split() removed
   }
   return lines;
@@ -129,7 +157,7 @@ function ownsMarker(text: string, marker: string): boolean {
 export function findContractSpan(text: string): ContractSpan | null {
   let open: number | null = null;
   for (const line of scanLines(text)) {
-    if (line.inFence) continue;
+    if (line.inert) continue;
     if (open === null) {
       if (ownsMarker(line.text, CONTRACT_START)) open = line.start;
       continue;
@@ -155,7 +183,7 @@ export function inspectMarkers(text: string): MarkerReport {
   let starts = 0;
   let ends = 0;
   for (const line of scanLines(text)) {
-    if (line.inFence) continue;
+    if (line.inert) continue;
     if (ownsMarker(line.text, CONTRACT_START)) starts += 1;
     if (ownsMarker(line.text, CONTRACT_END)) ends += 1;
   }

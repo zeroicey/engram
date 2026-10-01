@@ -223,16 +223,22 @@ function fitToBudget(
 function hardTruncate(text: string, maxBytes: number): string {
   if (maxBytes <= 1) return '';
   const marker = '…';
-  const limit = Math.max(0, maxBytes - Buffer.byteLength(marker, 'utf8'));
+  const budget = maxBytes - Buffer.byteLength(marker, 'utf8');
+  // The marker only fits if the ceiling can hold it; otherwise emit plain content. Returning
+  // `'…'` unconditionally meant `--max-bytes 2` produced 3 bytes — a ceiling that overflowed by
+  // exactly the amount it could not afford.
+  const room = budget > 0 ? budget : maxBytes;
   let out = '';
   let used = 0;
   for (const ch of text) {
     const w = Buffer.byteLength(ch, 'utf8');
-    if (used + w > limit) break;
+    if (used + w > room) break;
     out += ch;
     used += w;
   }
-  return `${out.replace(/\s+$/u, '')}${marker}`;
+  const body = out.replace(/\s+$/u, '');
+  if (budget <= 0) return body;
+  return `${body}${marker}`;
 }
 
 function path_label(bank: MemoryBank): string {

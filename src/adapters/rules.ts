@@ -46,7 +46,18 @@ const CLAUDE_POINTERS = [
 /** Only these tool formats have YAML frontmatter that must stay the very first bytes. */
 const NEEDS_FRONTMATTER = new Set<RuleFileKind>(['cursor', 'windsurf', 'copilot']);
 
-const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/;
+/**
+ * Frontmatter must open *and* close, and must not contain a top-level heading.
+ *
+ * A bare `---\n\n# My rules\n---\n…` is a horizontal rule followed by an H1, not frontmatter.
+ * An unterminated `---\n…` is a rule with no close. Treating either as frontmatter promoted a
+ * user's `alwaysApply: false` to `true` and moved their heading inside a YAML block.
+ */
+const FRONTMATTER_RE = /^---[ \t]*\r?\n((?:(?!^---[ \t]*\r?$)[\s\S])*?)^---[ \t]*\r?\n?/m;
+const hasUnterminatedFrontmatter = (text: string): boolean => {
+  if (!/^---[ \t]*\r?\n/.test(text)) return false;
+  return !/^---[ \t]*\r?$/m.test(text.slice(4));
+};
 const SHARED_LINE_RE = /^_Read by: .*_$/m;
 
 /** Frontmatter engram generates for a rule file that does not have one yet. */
@@ -133,8 +144,9 @@ export function renderRuleFile(
   if (isAuthored) {
     const current = existing ?? '';
     head = NEEDS_FRONTMATTER.has(def.kind) ? mergeFrontmatter(current, defaultFrontmatter(def)) : '';
-    const stripped = current
-      .replace(NEEDS_FRONTMATTER.has(def.kind) ? FRONTMATTER_RE : /^$/, '')
+    const stripped = hasUnterminatedFrontmatter(current)
+      ? current
+      : current.replace(NEEDS_FRONTMATTER.has(def.kind) ? FRONTMATTER_RE : /^$/, '')
       .replace(SHARED_LINE_RE, '')
       .replaceAll(MANAGED_MARKER, '');
     body = withoutContract(stripped);

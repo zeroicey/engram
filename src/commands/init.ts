@@ -51,7 +51,31 @@ export function aiSkeleton(ctx: SkeletonContext): AiFile[] {
   ];
 }
 
-async function writeOnce(
+/**
+ * Write **only if absent**. Used for every file inside `.ai/`.
+ *
+ * The bank belongs to the user, not to engram. An earlier version used one `writeOnce` helper for
+ * everything, which overwrote any file whose content differed from the template — so running
+ * `engram init` on this repository replaced its hand-written CURRENT_TASK.md and ARCHITECTURE.md
+ * with placeholders, and the damage landed in a commit. For a tool whose entire promise is "your
+ * memory survives", that is the worst possible bug, and it needs a separate code path rather than
+ * a shared one.
+ */
+async function writeNeverClobber(
+  root: string,
+  relPath: string,
+  content: string,
+  dryRun: boolean,
+): Promise<WriteAction> {
+  const abs = path.join(root, relPath);
+  const existing = await readFileSafe(abs);
+  if (existing !== null) return 'kept';
+  if (!dryRun) await writeIfMissing(abs, content);
+  return 'created';
+}
+
+/** Write when the content differs. Only for files engram owns end-to-end. */
+async function writeGenerated(
   root: string,
   relPath: string,
   content: string,
@@ -84,7 +108,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const dryRun = opts.dryRun === true;
 
   for (const f of aiSkeleton(ctx)) {
-    files.push({ path: f.path, action: await writeOnce(opts.root, f.path, f.content, dryRun) });
+    files.push({ path: f.path, action: await writeNeverClobber(opts.root, f.path, f.content, dryRun) });
   }
 
   for (const { toolId, def } of ruleFilesFor(tools.map((t) => t.id))) {
@@ -98,7 +122,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     if (opts.force) {
       // --force means "regenerate from the stub": the previous content is intentionally discarded.
       const stub = renderRuleFile(def, ctxRender).content;
-      files.push({ path: def.path, action: await writeOnce(opts.root, def.path, stub, dryRun) });
+      files.push({ path: def.path, action: await writeGenerated(opts.root, def.path, stub, dryRun) });
       continue;
     }
 
@@ -108,7 +132,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
       files.push({ path: def.path, action: 'skipped' });
       continue;
     }
-    const action = await writeOnce(opts.root, def.path, rendered.content, dryRun);
+    const action = await writeGenerated(opts.root, def.path, rendered.content, dryRun);
     files.push({ path: def.path, action: existing === null ? 'created' : action });
     void abs;
   }
@@ -118,7 +142,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
 
   const bootstrap = buildBootstrapPrompt({ facts, tools, notes: opts.notes });
   const bootstrapPath = '.engram/BOOTSTRAP.md';
-  files.push({ path: bootstrapPath, action: await writeOnce(opts.root, bootstrapPath, bootstrap, dryRun) });
+  files.push({ path: bootstrapPath, action: await writeGenerated(opts.root, bootstrapPath, bootstrap, dryRun) });
 
   if (facts.existingRuleFiles.length && !opts.force) {
     warnings.push(

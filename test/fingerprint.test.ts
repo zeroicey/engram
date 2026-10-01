@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { loadMemory, parseCurrentTask, decisionStatus } from '../src/core/memory.js';
 import { buildFingerprint, trimTo } from '../src/core/fingerprint.js';
 import { sandbox, seedBank } from './helpers.js';
+import { aiCurrentTask } from '../src/templates/ai-files.js';
 
 test('parseCurrentTask extracts goal, next action and skips table noise', () => {
   const content = [
@@ -40,6 +41,29 @@ test('parseCurrentTask extracts goal, next action and skips table noise', () => 
 test('a Blockers table header or separator row is never counted as a blocker', () => {
   const content = ['## Blockers', '', '| Blocker | Waiting on | Unblock by |', '| --- | --- | --- |', '| | | |', ''].join('\n');
   assert.deepEqual(parseCurrentTask(content).blockers, [], 'an empty table means no blockers');
+});
+
+test('REGRESSION template placeholder prose never reaches the fingerprint', () => {
+  // The shipped aiCurrentTask() template carries multi-line `<!-- ... -->` guidance under Goal,
+  // Code state, Next action and Blockers. Only the opener line was skipped, so the prose leaked
+  // in and every fresh `init` reported the template's own words as project state.
+  const pristine = parseCurrentTask(aiCurrentTask({ projectName: 'demo', today: '2026-10-01' }));
+  assert.equal(pristine.goal, '', 'template guidance is not a goal');
+  assert.equal(pristine.codeState, '');
+  assert.equal(pristine.nextAction, '');
+  assert.deepEqual(pristine.blockers, []);
+});
+
+test('REGRESSION a comment opener line is skipped, not just its continuation', () => {
+  const content = [
+    '## Goal',
+    '<!-- One sentence. It may wrap',
+    '     across several lines. -->',
+    '',
+    'The real goal.',
+    '',
+  ].join('\n');
+  assert.equal(parseCurrentTask(content).goal, 'The real goal.');
 });
 
 test('a wrapped goal is joined, not cut at the first physical line', () => {

@@ -18,7 +18,7 @@ read and write — plus a ≤1.5 KB fingerprint so a new session starts warm ins
 
 ```bash
 npx @zeroicey/engram init --tools agents,claude,cursor,pi   # 生成骨架 + 规则文件 + 元提示词
-npx engram dump                                   # ≤1.5KB 指纹，贴到新会话第一句
+npx @zeroicey/engram dump                         # ≤1.5KB 指纹，贴到新会话第一句
 npx @zeroicey/engram sync                         # 规则文件改动后刷新契约与技能载体
 ```
 
@@ -114,14 +114,14 @@ See `.ai/decisions/2026-10-01-canonical-skills-single-source.md`.
 ## Working with it day to day
 
 ```bash
-# start of a session
-npx engram dump            # paste as the first message of a new conversation
+# start of a session  (or use the local install: npm i -D @zeroicey/engram)
+npx @zeroicey/engram dump   # paste as the first message of a new conversation
 
 # while working — the assistant follows the rule file and writes back on its own
-/handoff parser-rewrite    # end of session
+/handoff parser-rewrite     # end of session
 
 # after editing a rule file by hand, or after changing a skill
-npx engram sync
+npx @zeroicey/engram sync
 ```
 
 Commit `.ai/`, the rule files and `.engram/BOOTSTRAP.md` to git: the bank only works if it is
@@ -143,7 +143,7 @@ documents itself with engram.
 ```bash
 npm test && npm pack --dry-run
 npm publish --access public
-git tag -a v0.1.0 -m "engram 0.1.0" && git push origin main --follow-tags
+git tag -a v0.2.0 -m "engram 0.2.0" && git push origin main --follow-tags
 ```
 
 Full procedure: `.ai/runbooks/release.md`. Setup: `.ai/runbooks/dev-setup.md`.

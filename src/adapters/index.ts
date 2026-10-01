@@ -94,7 +94,7 @@ export const TOOLS: ToolDef[] = [
         kind: 'agent-skills',
         dir: '.agents/skills',
         invoke: 'plain',
-        note: 'Codex scans `.agents/skills` from cwd up to the repo root (same dir as the `agents` tool).',
+        note: 'Codex scans `.agents/skills` from cwd up to the repo root (same dir as the `agents` tool); a skill is invoked by naming it with `$`, not `/`.',
       },
     ],
     notes: [
@@ -171,7 +171,7 @@ export const TOOLS: ToolDef[] = [
     ],
     skillSinks: [],
     notes: [
-      'Windsurf now prefers `.devin/rules/` and `.devin/workflows/`; `.windsurf/rules/` remains supported.',
+      '`.devin/rules/` is the Devin CLI/Devin Local preference; Windsurf Cascade still documents `.windsurf/rules/*.md` as its workspace rule path. Windsurf workflows are `.windsurf/workflows/`.',
       'Workspace rules are capped at ~12,000 characters per file — keep the appended contract short.',
     ],
     styleGuide: `- Rule frontmatter: \`trigger: always_on | model_decision | glob | manual\`, \`description\`, and \`globs:\` when the mode is \`glob\`.
@@ -241,7 +241,8 @@ export const TOOLS: ToolDef[] = [
       'Project resources require trust; run `/reload` after adding skills or prompts in a live session.',
       'Skills are advertised by name+description and loaded on demand — keep descriptions routing-precise.',
     ],
-    styleGuide: `- AGENTS.md is the context file; subdirectory AGENTS.md files add local scope.
+    styleGuide: `- AGENTS.md is the context file, loaded from the agent directory, the cwd and its parents (not
+  discovered on demand downwards, unlike Codex); subdirectory files apply only when Pi runs there.
 - Skills: frontmatter \`name\` + \`description\` (max 1024 chars) decides when the model loads them — say what it does *and* when it applies.
 - Prefer bundled references over long instructions; Pi loads SKILL.md only when routed to.
 - Project trust gates \`.pi/skills\` and \`.pi/prompts\`; mention this to humans, not to the model.`,

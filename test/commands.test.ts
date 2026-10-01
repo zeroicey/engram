@@ -47,6 +47,35 @@ test('init creates the bank, rule files, carriers and the bootstrap prompt', asy
   assert.ok(bootstrap.includes('## Task'), 'the meta-prompt must be actionable');
 });
 
+test('REGRESSION init never modifies a single file inside .ai/', async (t) => {
+  // A memory tool that overwrites the memory is self-defeating. An earlier shared write helper
+  // rewrote any bank file whose content differed from the template, and running `engram init` on
+  // this repository replaced its hand-written CURRENT_TASK.md and ARCHITECTURE.md — committed as
+  // placeholders. `init` may only ever add missing files.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await runInit({ root: sb.root, toolIds: ['agents'] });
+
+  const handwritten: Record<string, string> = {
+    '.ai/CURRENT_TASK.md': '# Current task\n\n**Status:** 🟡 active\n\n## Goal\n\nMy real goal.\n',
+    '.ai/ARCHITECTURE.md': '# Architecture\n\n## 1. Purpose\n\nSomething only I know.\n',
+    '.ai/README.md': '# .ai/\n\nMy own index.\n',
+    '.ai/decisions/2026-01-01-mine.md': '# Mine\n\n**Status:** ✅ ACCEPTED\n',
+  };
+  for (const [rel, content] of Object.entries(handwritten)) await sb.write(rel, content);
+  const before = new Map<string, string>();
+  for (const rel of Object.keys(handwritten)) before.set(rel, await sb.read(rel));
+
+  const res = await runInit({ root: sb.root, toolIds: ['agents', 'claude'] });
+  assert.ok(
+    res.files.filter((f) => f.path.startsWith('.ai/')).every((f) => f.action === 'kept'),
+    'no bank file may be created or updated by a second init',
+  );
+  for (const [rel, content] of before) {
+    assert.equal(await sb.read(rel), content, `${rel} was modified by init`);
+  }
+});
+
 test('init preserves an existing AGENTS.md body and appends the contract', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());

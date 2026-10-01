@@ -104,6 +104,10 @@ test('every relative import resolves to a real module', async () => {
 
 test('the layering invariants in ARCHITECTURE.md still describe the code', async () => {
   const arch = await fs.readFile(path.join(ROOT, '.ai', 'ARCHITECTURE.md'), 'utf8');
+  // Guard against the test going vacuous: this file is read as a *document*, and a scaffolded
+  // template would satisfy every assertion below while asserting nothing about this codebase.
+  assert.ok(!arch.includes('Single file by design'), 'ARCHITECTURE.md is still the scaffold template');
+  assert.ok(arch.includes('src/'), 'ARCHITECTURE.md should describe this repository');
   const registry = await fs.readFile(path.join(SRC, 'adapters', 'index.ts'), 'utf8');
   // "TOOLS is the single place to fix" was documented and false: the frontmatter dialect lived in
   // rules.ts while the tool record lived in index.ts, so a maintainer following the doc changed

@@ -29,8 +29,8 @@ code does **not** prove output landed where `bin` expects (see `.ai/pitfalls/cas
 | `src/core/` | leaf layer: fs helpers, project detection, `.ai/` parsing, fingerprint budgeting |
 | `src/templates/` | contract block, `.ai/` skeleton, skill specs, bootstrap meta-prompt. No fs access |
 | `src/adapters/` | per-tool registry and renderers for rule files and skill carriers |
-| `src/commands/` | `init`, `dump`, `new`, `sync` orchestration |
-| `test/` | `node:test` suites run against compiled output in `build/test/` |
+| `src/commands/` | `init`, `dump`, `new`, `sync` orchestration (`sync` dispatch lives in `cli.ts`) |
+| `test/` | 6 `node:test` suites, incl. `architecture.test.ts` which enforces the layering |
 | `.ai/` | this project's own memory bank (dogfooded) |
 
 Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templates/meta-prompt`.
@@ -52,7 +52,7 @@ Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templ
 
 ## Definition of done
 
-1. `npm test` passes (52 tests today, `node --test` on compiled output).
+1. `npm test` passes (95 tests today, `node --test` on compiled output).
 2. `npm run typecheck` is clean.
 3. `node build/src/cli.js dump` stays inside its byte budget.
 4. Behaviour that the memory bank records — an invariant, a decision, a pitfall — is written back

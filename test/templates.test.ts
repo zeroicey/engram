@@ -350,6 +350,8 @@ test('CURRENT_TASK template keeps blockers parseable (bullets, not a table)', ()
   );
   assert.ok(task);
   const parsed = parseCurrentTask(task.content);
-  assert.ok(parsed.goal.length > 0, 'template goal must parse');
-  assert.ok(parsed.nextAction.length > 0, 'template next action must parse');
+  assert.equal(parsed.goal, '', 'placeholder guidance is not project state');
+  assert.equal(parsed.nextAction, '');
+  assert.deepEqual(parsed.blockers, [], 'an untouched template has no blockers');
+  assert.ok(!parsed.goal.includes('<!--'), 'no comment text may leak into the fingerprint');
 });
