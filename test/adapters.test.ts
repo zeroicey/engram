@@ -36,11 +36,15 @@ test('skill carriers rewrite the ARGUMENTS token per tool', () => {
   assert.ok(skill.content.startsWith('---\nname: handoff\n'));
   assert.ok(!skill.content.includes('$ARGUMENTS'));
 
-  const command = slash.find((f) => f.path === '.claude/commands/audit.md');
+  const command = slash.find((f) => f.path === '.claude/commands/handoff.md');
   assert.ok(command);
   assert.match(command.content, /^---\ndescription: /m);
-  assert.match(command.content, /argument-hint:/);
+  assert.match(command.content, /^argument-hint: '.*'$/m, 'argument-hint must be valid YAML');
   assert.ok(command.content.includes('$ARGUMENTS'));
+  assert.ok(
+    !/^description: .*: /m.test(command.content) && command.content.split('\n')[2]?.includes('e.g.'),
+    'quotes inside the hint must not break the frontmatter scalar',
+  );
 
   const toml = gemini.find((f) => f.path === '.gemini/commands/handoff.toml');
   assert.ok(toml);
@@ -62,6 +66,20 @@ test('every materialised file declares its canonical source and the generated ma
       );
       assert.ok(file.content.includes(`.ai/skills/`), `${file.path} must name its source`);
     }
+  }
+});
+
+test('slash-command frontmatter parses as YAML for every skill', () => {
+  for (const file of materialize({ kind: 'prompt-md-args', dir: '.pi/prompts' }, SKILL_SPECS)) {
+    const [head = ''] = file.content.split('\n---\n');
+    const lines = head
+      .replace(/^---\n/, '')
+      .split('\n')
+      .filter(Boolean);
+    assert.match(lines[0] ?? '', /^description: \S/, `${file.path}: description`);
+    const hint = lines[1] ?? '';
+    assert.match(hint, /^argument-hint: '.*'$/, `${file.path}: hint must be a quoted YAML scalar`);
+    assert.ok(!hint.includes('""'), `${file.path}: unbalanced quotes`);
   }
 });
 

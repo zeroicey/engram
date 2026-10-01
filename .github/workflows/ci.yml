@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: CLI smoke test
+        run: |
+          node build/src/cli.js --version
+          node build/src/cli.js tools
+          node build/src/cli.js init --all --dry-run --root .
+          node build/src/cli.js dump --root .
+          node build/src/cli.js sync --root .
+          git diff --exit-code -- .ai AGENTS.md CLAUDE.md GEMINI.md .claude .pi .cursor .gemini .windsurf .github/prompts .github/instructions .github/copilot-instructions.md .agents
+      - name: Verify the contract block is present exactly once per rule file
+        run: |
+          for f in AGENTS.md CLAUDE.md GEMINI.md .cursor/rules/engram-memory.mdc \
+                   .windsurf/rules/engram-memory.md .github/copilot-instructions.md \
+                   .github/instructions/engram-memory.instructions.md; do
+            n=$(grep -c 'engram:contract:start v' "$f")
+            if [ "$n" -ne 1 ]; then echo "$f has $n contract blocks"; exit 1; fi
+          done
+      - name: Publish dry run
+        if: matrix.node == '22'
+        run: npm pack --dry-run

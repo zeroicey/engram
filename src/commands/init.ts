@@ -97,7 +97,8 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const existingBootstrap = await readFileSafe(bootstrapAbs);
   const bootstrapAction = classifyWrite(existingBootstrap, bootstrap);
   if (!opts.dryRun && bootstrapAction !== 'kept') await writeFile(bootstrapAbs, bootstrap);
-  files.push({ path: bootstrapPath, action: opts.dryRun ? 'created' : bootstrapAction });
+  // The dry run already reads the file, so the reported action is accurate in both modes.
+  files.push({ path: bootstrapPath, action: bootstrapAction });
 
   if (facts.existingRuleFiles.length && !opts.force) {
     warnings.push(

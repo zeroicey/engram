@@ -23,8 +23,18 @@ function promptTemplate(spec: SkillSpec, sourcePath: string, frontmatter: 'slash
   const fm =
     frontmatter === 'copilot'
       ? ['---', 'mode: agent', `description: ${oneLine(spec.description)}`, '---'].join('\n')
-      : ['---', `description: ${oneLine(spec.description)}`, `argument-hint: "${spec.argumentHint}"`, '---'].join('\n');
+      : [
+          '---',
+          `description: ${oneLine(spec.description)}`,
+          `argument-hint: ${yamlString(spec.argumentHint)}`,
+          '---',
+        ].join('\n');
   return `${fm}\n\n${generatedHeader(sourcePath)}\n\n${body}\n`;
+}
+
+/** YAML single-quoted scalar; `'` is escaped by doubling, as the YAML spec requires. */
+function yamlString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function tomlEscape(body: string): string {
