@@ -59,6 +59,46 @@ export async function readFileSafe(p: string): Promise<string | null> {
   }
 }
 
+export interface ReadResult {
+  /** File content, or `null` when the path simply does not exist. */
+  text: string | null;
+  /** Set when the read failed for a reason other than "absent" (EACCES, EMFILE, …). */
+  error: string | null;
+}
+
+/**
+ * Read a file, distinguishing "not there" from "there but unreadable".
+ *
+ * Collapsing EACCES into "no decisions" is the worst failure this tool can make: the fingerprint
+ * then asserts a project has no binding decisions, with exit code 0 and nothing on stderr.
+ */
+export async function readIfPresent(p: string): Promise<ReadResult> {
+  try {
+    return { text: await fs.readFile(p, 'utf8'), error: null };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? '';
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { text: null, error: null };
+    return { text: null, error: `${p}: ${code || 'read failed'}` };
+  }
+}
+
+export interface ListResult {
+  names: string[];
+  error: string | null;
+}
+
+/** List a directory, reporting an unreadable directory instead of an empty one. */
+export async function listIfPresent(dir: string): Promise<ListResult> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return { names: entries.filter((e) => e.isFile()).map((e) => e.name), error: null };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? '';
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { names: [], error: null };
+    return { names: [], error: `${dir}: ${code || 'readdir failed'}` };
+  }
+}
+
 export async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
 }

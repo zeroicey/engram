@@ -140,7 +140,8 @@ export function aiCurrentTask(ctx: SkeletonContext): string {
 
 ## Goal
 
-<!-- One sentence. If you need two, the task is really two tasks. -->
+<!-- One sentence. If you need two, the task is really two tasks.
+     It may wrap across lines; the parser joins the paragraph rather than cutting at line 1. -->
 
 ## Checklist
 
@@ -149,23 +150,25 @@ export function aiCurrentTask(ctx: SkeletonContext): string {
 
 ## Code state
 
-<!-- What is actually true right now: branch, last merged change, half-finished edits. -->
+<!-- What is actually true right now: branch, last merged change, half-finished edits.
+     Read into the fingerprint as well, so lead with the branch. -->
 
 ## Blockers
 
-<!-- One line each: what is blocked, on whom/what. "none" is a valid answer. -->
+<!-- Bullets, not a table: \`engram dump\` lifts this section straight into the session fingerprint.
+     One blocker per line as "<what> — waiting on <whom>", or the single word: none -->
 
-| Blocker | Waiting on | Unblock by |
-| --- | --- | --- |
-| | | |
+- none yet
 
 ## Pitfall reminders for the current branch
 
-<!-- Link to \`.ai/pitfalls/cases/\` entries that apply to what you are touching right now. -->
+<!-- Link to \`.ai/pitfalls/cases/\` entries that apply to what you are touching right now.
+     These reach the fingerprint too, so keep each title short and specific. -->
 
 ## Next action
 
-<!-- The single next step, specific enough to execute without re-reading this file. -->
+<!-- The single next step, specific enough to execute without re-reading this file.
+     Wrapped across several lines is fine: the parser joins the whole paragraph. -->
 `;
 }
 

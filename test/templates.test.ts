@@ -1,12 +1,28 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { AI_CONTRACT, CONTRACT_START, MANAGED_MARKER, withContract, withoutContract } from '../src/templates/contract.js';
+import {
+  AI_CONTRACT,
+  CONTRACT_END,
+  CONTRACT_START,
+  MANAGED_MARKER,
+  findContractSpan,
+  inspectMarkers,
+  replaceContractBlock,
+  stripContractBlock,
+  withContract,
+  withoutContract,
+} from '../src/templates/contract.js';
 import { refreshContract, renderRuleFile } from '../src/adapters/rules.js';
+import { parseCurrentTask } from '../src/core/memory.js';
 import { SKILL_SPECS, skillFile } from '../src/templates/skills.js';
 import { aiSkeleton } from '../src/commands/init.js';
 
 const AGENTS_RULE = { path: 'AGENTS.md', kind: 'agents' as const, note: 'test' };
 const CURSOR_RULE = { path: '.cursor/rules/engram-memory.mdc', kind: 'cursor' as const, note: 'test' };
+const WS_RULE = { path: '.windsurf/rules/engram-memory.md', kind: 'windsurf' as const, note: 'test' };
+const CTX = { projectName: 'demo', alsoReadBy: [] as string[] };
+
+// ── contract splicing ────────────────────────────────────────────────────────
 
 test('withContract wraps a body once and is idempotent', () => {
   const once = withContract('# Rules\n\nBe careful.');
@@ -29,50 +45,156 @@ test('withoutContract returns exactly the authored body', () => {
   assert.equal(withoutContract(withContract(body)), body);
 });
 
+test('replaceContractBlock is the single splice and is idempotent', () => {
+  const rendered = withContract('# Rules\n\nbody');
+  const once = replaceContractBlock(rendered);
+  assert.equal(replaceContractBlock(once), once);
+  assert.equal(once.split(CONTRACT_START).length - 1, 1);
+});
+
+// ── regression: dangling markers used to delete user prose ───────────────────
+
+test('REGRESSION an unpaired contract marker never truncates the file', () => {
+  // The original bug: indexOf(CONTRACT_END) returned -1 and the code sliced at start+29,
+  // cutting 29 bytes out of hand-written prose and duplicating the body. Byte count 162 → 2432.
+  const damaged = `# X\n\n## MY IMPORTANT SECTION\n\nhuman rule: never force push\n\nmore prose\n\n${CONTRACT_START}\n## half\n`;
+
+  assert.equal(inspectMarkers(damaged).health, 'unbalanced');
+
+  const refreshed = refreshContract(damaged, AGENTS_RULE);
+  assert.equal(refreshed.health, 'unbalanced-markers');
+  assert.equal(refreshed.content, damaged, 'file must come back byte-identical');
+  assert.match(refreshed.note ?? '', /unbalanced/);
+
+  const rendered = renderRuleFile(AGENTS_RULE, CTX, damaged);
+  assert.equal(rendered.content, damaged, 'renderRuleFile must refuse too');
+  assert.ok(damaged.includes('never force push'));
+  assert.ok(damaged.includes('more prose'));
+});
+
+test('markers inside a fenced code block are documentation, not the contract', () => {
+  // A README-style file that *shows* an engram marker inside ``` must survive untouched.
+  const doc = [
+    '# Docs',
+    '',
+    'Here is how the marker looks:',
+    '',
+    '```markdown',
+    CONTRACT_START,
+    '## fake contract',
+    CONTRACT_END,
+    '```',
+    '',
+    '## Real content',
+    '',
+    'do not eat this fence',
+    '',
+  ].join('\n');
+
+  assert.equal(inspectMarkers(doc).health, 'absent');
+  assert.equal(findContractSpan(doc), null);
+  assert.equal(stripContractBlock(doc), doc);
+
+  const rendered = renderRuleFile(AGENTS_RULE, CTX, doc);
+  assert.ok(rendered.content.includes('do not eat this fence'));
+  assert.ok(rendered.content.includes('```markdown'), 'the fence and its example survive');
+  // Two textual occurrences: the one inside the fence (documentation, preserved) and the real
+  // block that was appended. Only the second is a contract, which inspectMarkers must prove.
+  const after = inspectMarkers(rendered.content);
+  assert.equal(after.health, 'balanced');
+  assert.equal(after.starts, 1, 'exactly one *real* opening marker outside code fences');
+});
+
+test('inspectMarkers counts balanced pairs and flags both directions of breakage', () => {
+  const balanced = withContract('# x');
+  assert.equal(inspectMarkers(balanced).health, 'balanced');
+  assert.equal(inspectMarkers(balanced).starts, 1);
+  assert.equal(inspectMarkers(balanced).ends, 1);
+  assert.equal(inspectMarkers('# nothing here').health, 'absent');
+  assert.equal(inspectMarkers(`a\n${CONTRACT_END}\nb`).health, 'unbalanced');
+});
+
+// ── frontmatter preservation ─────────────────────────────────────────────────
+
+test('REGRESSION a user rule narrowed to alwaysApply:false is not silently promoted', () => {
+  const userRule = [
+    '---',
+    'description: MY OWN RULE - do not touch',
+    'globs: "src/**"',
+    'alwaysApply: false',
+    '---',
+    '# My rule',
+    '',
+    'Keep this scope, it is deliberate.',
+    '',
+  ].join('\n');
+
+  const rendered = renderRuleFile(CURSOR_RULE, CTX, userRule);
+  assert.ok(rendered.content.includes('alwaysApply: false'), 'narrow scope must survive');
+  assert.ok(rendered.content.includes('globs: "src/**"'));
+  assert.ok(rendered.content.includes('Keep this scope'));
+  assert.ok(!rendered.content.includes('alwaysApply: true'));
+  assert.ok(rendered.content.startsWith('---'), 'frontmatter stays first');
+  assert.equal(rendered.content.split('\n---\n').length, 2, 'no nested frontmatter');
+});
+
+test('a frontmatter rule with no keys of its own gains engram defaults', () => {
+  const bare = '---\nalwaysApply: false\n---\n\n# only key\n';
+  const rendered = renderRuleFile(WS_RULE, CTX, bare);
+  assert.ok(rendered.content.includes('alwaysApply: false'));
+  assert.ok(rendered.content.includes('trigger: always_on'), 'missing key is filled in');
+});
+
+test('cursor alwaysApply rule does not carry ignored keys', () => {
+  const out = renderRuleFile(CURSOR_RULE, CTX);
+  assert.ok(out.content.startsWith('---\nalwaysApply: true\n---\n'));
+  assert.ok(!out.content.includes('globs:'), 'Cursor ignores globs when alwaysApply is set');
+});
+
+// ── rendering invariants ─────────────────────────────────────────────────────
+
 test('refreshContract is a no-op on a fresh file and repairs a damaged one', () => {
-  const ctx = { projectName: 'demo', alsoReadBy: [] };
-  const rendered = renderRuleFile(AGENTS_RULE, ctx);
-  assert.equal(refreshContract(rendered, AGENTS_RULE), rendered);
+  const rendered = renderRuleFile(AGENTS_RULE, CTX).content;
+  assert.equal(refreshContract(rendered, AGENTS_RULE).content, rendered);
 
   const damaged = rendered.replace(AI_CONTRACT, 'truncated...');
   const repaired = refreshContract(damaged, AGENTS_RULE);
-  assert.ok(repaired.includes(AI_CONTRACT));
-  assert.equal(refreshContract(repaired, AGENTS_RULE), repaired, 'repair must be idempotent');
+  assert.ok(repaired.content.includes(AI_CONTRACT));
+  assert.equal(refreshContract(repaired.content, AGENTS_RULE).content, repaired.content);
 });
 
 test('refreshContract appends the contract to a file that never had one', () => {
   const handWritten = '# Hand written\n\nTeam rules.\n';
   const next = refreshContract(handWritten, AGENTS_RULE);
-  assert.ok(next.startsWith('# Hand written'));
-  assert.ok(next.includes(AI_CONTRACT));
+  assert.ok(next.content.startsWith('# Hand written'));
+  assert.ok(next.content.includes(AI_CONTRACT));
 });
 
-test('cursor rule keeps its frontmatter above the contract', () => {
-  const out = renderRuleFile(CURSOR_RULE, { projectName: 'demo', alsoReadBy: [] });
-  assert.ok(out.startsWith('---\n'), 'frontmatter must remain the first thing in the file');
-  assert.match(out, /alwaysApply: true/);
-  assert.ok(out.indexOf('alwaysApply: true') < out.indexOf(CONTRACT_START));
+test('the managed marker survives a damaged contract repair', () => {
+  const rendered = renderRuleFile(AGENTS_RULE, CTX).content.replace(AI_CONTRACT, 'broken');
+  const repaired = refreshContract(rendered, AGENTS_RULE);
+  assert.equal(repaired.content.split(MANAGED_MARKER).length - 1, 1);
+  assert.ok(repaired.content.includes(AI_CONTRACT));
 });
 
 test('renderRuleFile preserves an existing body but notes shared readers', () => {
   const existing = '# Existing\n\ndo not clobber me\n';
   const out = renderRuleFile(AGENTS_RULE, { projectName: 'demo', alsoReadBy: ['codex', 'pi'] }, existing);
-  assert.ok(out.includes('do not clobber me'));
-  assert.match(out, /_Read by: codex, pi\._/);
-  assert.ok(out.includes(AI_CONTRACT));
+  assert.ok(out.content.includes('do not clobber me'));
+  assert.match(out.content, /_Read by: codex, pi\._/);
+  assert.ok(out.content.includes(AI_CONTRACT));
 });
 
 test('every rendered rule file carries the managed marker exactly once', () => {
-  const out = renderRuleFile(AGENTS_RULE, { projectName: 'demo', alsoReadBy: [] });
-  assert.equal(out.split(MANAGED_MARKER).length - 1, 1);
-  assert.ok(out.indexOf(MANAGED_MARKER) < out.indexOf(CONTRACT_START), 'marker precedes contract');
+  const out = renderRuleFile(AGENTS_RULE, CTX);
+  assert.equal(out.content.split(MANAGED_MARKER).length - 1, 1);
+  assert.ok(out.content.indexOf(MANAGED_MARKER) < out.content.indexOf(CONTRACT_START), 'marker precedes contract');
 });
 
 test('re-rendering a managed rule file does not nest markers or contracts', () => {
-  const ctx = { projectName: 'demo', alsoReadBy: [] };
-  const first = renderRuleFile(AGENTS_RULE, ctx);
-  const second = renderRuleFile(AGENTS_RULE, ctx, first);
-  const third = renderRuleFile(AGENTS_RULE, ctx, second);
+  const first = renderRuleFile(AGENTS_RULE, CTX).content;
+  const second = renderRuleFile(AGENTS_RULE, CTX, first).content;
+  const third = renderRuleFile(AGENTS_RULE, CTX, second).content;
   assert.equal(second, first);
   assert.equal(third, first);
   assert.equal(second.split(MANAGED_MARKER).length - 1, 1);
@@ -81,9 +203,8 @@ test('re-rendering a managed rule file does not nest markers or contracts', () =
 });
 
 test('re-rendering a frontmatter file never duplicates its frontmatter', () => {
-  const ctx = { projectName: 'demo', alsoReadBy: [] };
-  const first = renderRuleFile(CURSOR_RULE, ctx);
-  const second = renderRuleFile(CURSOR_RULE, ctx, first);
+  const first = renderRuleFile(CURSOR_RULE, CTX).content;
+  const second = renderRuleFile(CURSOR_RULE, CTX, first).content;
   assert.equal(second, first);
   assert.equal(second.split('alwaysApply: true').length - 1, 1);
   assert.ok(second.startsWith('---\n'));
@@ -91,19 +212,13 @@ test('re-rendering a frontmatter file never duplicates its frontmatter', () => {
 
 test('shared-reader notes appear once no matter how often init runs', () => {
   const ctx = { projectName: 'demo', alsoReadBy: ['codex', 'pi'] };
-  const first = renderRuleFile(AGENTS_RULE, ctx);
-  const second = renderRuleFile(AGENTS_RULE, ctx, first);
+  const first = renderRuleFile(AGENTS_RULE, ctx).content;
+  const second = renderRuleFile(AGENTS_RULE, ctx, first).content;
   assert.equal(second, first);
   assert.equal(second.split('_Read by:').length - 1, 1);
 });
 
-test('the managed marker survives a damaged contract repair', () => {
-  const ctx = { projectName: 'demo', alsoReadBy: [] };
-  const rendered = renderRuleFile(AGENTS_RULE, ctx).replace(AI_CONTRACT, 'broken');
-  const repaired = refreshContract(rendered, AGENTS_RULE);
-  assert.equal(repaired.split(MANAGED_MARKER).length - 1, 1);
-  assert.ok(repaired.includes(AI_CONTRACT));
-});
+// ── canonical skills and skeleton ────────────────────────────────────────────
 
 test('every canonical skill has valid frontmatter and a tool-neutral body', () => {
   assert.deepEqual(
@@ -149,4 +264,16 @@ test('decision template ships the status machine', () => {
   for (const status of ['💭 PROPOSAL', '✅ ACCEPTED', '🪦 REJECTED']) {
     assert.ok(decision.content.includes(status), `template lacks ${status}`);
   }
+});
+
+test('CURRENT_TASK template keeps blockers parseable (bullets, not a table)', () => {
+  // Regression: the template shipped a Markdown table for Blockers while the parser skipped
+  // table rows, so `blocked:` was structurally dead for every scaffolded repository.
+  const task = aiSkeleton({ projectName: 'demo', today: '2026-10-01' }).find((f) =>
+    f.path.endsWith('CURRENT_TASK.md'),
+  );
+  assert.ok(task);
+  const parsed = parseCurrentTask(task.content);
+  assert.ok(parsed.goal.length > 0, 'template goal must parse');
+  assert.ok(parsed.nextAction.length > 0, 'template next action must parse');
 });

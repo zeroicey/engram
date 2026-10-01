@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { isTemplateName, listFiles, pathExists, readFileSafe } from './project.js';
+import { isDir, isTemplateName, listIfPresent, readIfPresent, type ListResult, type ReadResult } from './project.js';
 
 export type DecisionStatus = 'PROPOSAL' | 'ACCEPTED' | 'REJECTED' | 'UNKNOWN';
 
@@ -27,6 +27,7 @@ export interface CurrentTask {
   updated: string;
   goal: string;
   nextAction: string;
+  codeState: string;
   blockers: string[];
   /** Raw markdown of the file, for audits. */
   raw: string;
@@ -43,9 +44,18 @@ export interface MemoryBank {
   runbooks: MemoryEntry[];
   /** Names of `.ai/skills/*.md`. */
   skills: string[];
+  /**
+   * Paths that exist but could not be read (EACCES, EMFILE, …).
+   * A non-empty list means the bank is *partially* unreadable, not empty — `dump` says so.
+   */
+  readErrors: string[];
 }
 
 const DATE_RE = /^(\d{4}-\d{2}-\d{2})-(.+?)(\.md|-handoff\.md)$/;
+const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})/;
+
+/** A heading of any level, so a `####` subsection correctly ends a `##` section. */
+const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.*)$/;
 
 function baseName(file: string): { date: string; topic: string } {
   const m = DATE_RE.exec(file);
@@ -60,17 +70,31 @@ function titleOf(content: string, fallback: string): string {
   return h1[1].replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
 }
 
-function decisionStatus(content: string): DecisionStatus {
-  const m = /💭\s*PROPOSAL|✅\s*ACCEPTED|🪦\s*REJECTED/.exec(content);
+const STATUS_LINE_RE = /^[^\S\n]*\**[^\S\n]*(?:status|state)\**[^\S\n]*:[^\S\n]*(.*)$/im;
+
+/**
+ * Read the status from its *header line*, not from the leftmost emoji token in the file.
+ *
+ * The old version scanned the whole document, so a ratified decision whose Context mentioned
+ * "originally filed as 💭 PROPOSAL" was reported as an open proposal — the BINDING section of the
+ * fingerprint, its most consequential output, silently wrong.
+ *
+ * Exported so `/audit` and tests can check a decision without loading the whole bank.
+ */
+export function decisionStatus(content: string): DecisionStatus {
+  const header = STATUS_LINE_RE.exec(content)?.[1] ?? '';
+  const scope = header || content;
+  const m = /💭\s*PROPOSAL|✅\s*ACCEPTED|🪦\s*REJECTED|🔴\s*REJECTED/i.exec(scope);
   if (!m?.[0]) return 'UNKNOWN';
-  const s = m[0];
+  const s = m[0].toUpperCase();
   if (s.includes('PROPOSAL')) return 'PROPOSAL';
   if (s.includes('ACCEPTED')) return 'ACCEPTED';
   return 'REJECTED';
 }
 
 function severityOf(content: string): PitfallEntry['severity'] {
-  const m = /🔴\s*high|🟠\s*medium|🟡\s*low/i.exec(content);
+  const header = STATUS_LINE_RE.exec(content)?.[1] ?? content;
+  const m = /🔴\s*high|🟠\s*medium|🟡\s*low/i.exec(header);
   if (!m?.[0]) return 'unknown';
   if (/high/i.test(m[0])) return 'high';
   if (/medium/i.test(m[0])) return 'medium';
@@ -80,29 +104,69 @@ function severityOf(content: string): PitfallEntry['severity'] {
 const byDateDesc = (a: MemoryEntry, b: MemoryEntry): number =>
   b.date.localeCompare(a.date) || b.file.localeCompare(a.file);
 
-async function readEntries(dir: string): Promise<Array<MemoryEntry & { content: string }>> {
-  const files = (await listFiles(dir)).filter((f) => f.endsWith('.md') && !isTemplateName(f));
-  const out: Array<MemoryEntry & { content: string }> = [];
-  for (const file of files) {
-    const content = (await readFileSafe(path.join(dir, file))) ?? '';
-    const { date, topic } = baseName(file);
-    out.push({ file, date, topic, title: titleOf(content, topic), content });
+/** Lines of a document that are not inside a fenced code block, with heading level attached. */
+interface ContentLine {
+  text: string;
+  heading: number | null;
+  inFence: boolean;
+}
+
+function contentLines(content: string): ContentLine[] {
+  const out: ContentLine[] = [];
+  let fence: string | null = null;
+  for (const raw of content.split('\n')) {
+    const fenceMatch = FENCE_RE.exec(raw);
+    const marker = fenceMatch?.[1]?.[0] ?? null;
+    if (fence === null && marker) fence = marker;
+    else if (fence !== null && marker === fence) fence = null;
+    const inFence = fence !== null;
+    const headingMatch = inFence ? null : HEADING_RE.exec(raw);
+    out.push({
+      text: raw,
+      heading: headingMatch ? (headingMatch[1] ?? '').length : null,
+      inFence,
+    });
   }
   return out;
 }
 
+/**
+ * Body lines of a `## Heading`, tolerant of decoration (`## Goal:`, `### Goal`, `## Goal — x`)
+ * and terminated by *any* heading level, including `####`.
+ *
+ * Returns lines with comments, blanks, rules and table separators removed.
+ */
 function section(content: string, heading: string): string[] {
-  const lines = content.split('\n');
-  const start = lines.findIndex((l) => l.trim().toLowerCase() === heading.toLowerCase());
-  if (start === -1) return [];
+  const wanted = heading.replace(/^#+\s*/, '').toLowerCase();
+  const lines = contentLines(content);
+  let inSection = false;
+  const base: number[] = [];
   const out: string[] = [];
-  for (let i = start + 1; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    if (/^#{1,3}\s/.test(line)) break;
-    const t = line.trim();
-    if (!t || t.startsWith('<!--')) continue;
-    if (t.startsWith('|') || /^-{3,}$/.test(t)) continue; // tables and rules carry no field data
-    out.push(t.replace(/^-\s*\[[ xX]\]\s*/, '').replace(/^[-*]\s*/, '').replace(/^>\s*/, ''));
+
+  for (const line of lines) {
+    if (line.inFence) continue;
+    if (line.heading !== null) {
+      const level = line.heading;
+      const title = (HEADING_RE.exec(line.text)?.[2] ?? '')
+        .toLowerCase()
+        .split(/[:—–]/)[0]
+        ?.trim()
+        .replace(/[.!?]+$/, '');
+      if (!inSection && title === wanted) {
+        inSection = true;
+        base.push(level);
+        continue;
+      }
+      // Any heading ends the section, including a `####` subsection: its bullets are the
+      // subsection's content, not the parent's. Continuing past it leaked "escalated yesterday"
+      // into the blockers list and evicted real blockers via the 3-item cap.
+      if (inSection) break;
+      continue;
+    }
+    if (!inSection) continue;
+    const t = line.text.trim();
+    if (!t || t.startsWith('<!--') || /^-{3,}$/.test(t)) continue;
+    out.push(t);
   }
   return out;
 }
@@ -110,33 +174,104 @@ function section(content: string, heading: string): string[] {
 const cleanInline = (s: string): string =>
   s
     .replace(/<!--.*?-->/g, '')
-    .replace(/\*\*/g, '')
-    .replace(/[`*_]/g, '')
+    .replace(/[*_`]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 
+const stripBullet = (l: string): string =>
+  l.replace(/^[-*+]\s+/, '').replace(/^(\[[ xX]\]|✔|✗)\s*/, '').trim();
+
+/** Join the first paragraph of a section, so an 80-column wrapped goal is not cut mid-sentence. */
+function paragraph(lines: string[]): string {
+  const out: string[] = [];
+  for (const raw of lines) {
+    const line = stripBullet(cleanInline(raw));
+    if (!line) continue;
+    if (line.startsWith('|')) break; // a table, not prose
+    out.push(line);
+    if (out.length > 1 && /[.!?:]$/.test(line)) break;
+  }
+  return out.join(' ');
+}
+
+/**
+ * Blockers, from either bullets or a Markdown table.
+ *
+ * The shipped template used a table while the parser skipped table rows, which made `blocked:`
+ * a permanently dead field for every scaffolded repository. Both shapes are now supported, and
+ * the template emits bullets so the common path stays unambiguous.
+ */
+function extractBlockers(lines: string[]): string[] {
+  const out: string[] = [];
+  let seenHeader = false;
+  for (const raw of lines) {
+    if (raw.startsWith('|')) {
+      const cells = raw
+        .split('|')
+        .slice(1, -1)
+        .map((c) => cleanInline(c));
+      if (cells.length === 0) continue;
+      // A separator row (`| --- | --- |`) is not a blocker. Check the cells, not the joined
+      // string: joining first yields "--- — ---", which no character-class test can match.
+      if (cells.every((c) => /^[-:]+$/.test(c))) continue;
+      if (!seenHeader) {
+        seenHeader = true;
+        continue; // column headers are not blockers
+      }
+      const joined = cells.filter(Boolean).join(' — ');
+      if (joined) out.push(joined);
+      continue;
+    }
+    const line = stripBullet(cleanInline(raw));
+    if (!line || /^none\b/i.test(line)) continue;
+    out.push(line);
+  }
+  return out.slice(0, 3);
+}
+
 export function parseCurrentTask(content: string): CurrentTask {
-  const statusM = /\*{0,2}Status\*{0,2}\s*:?\s*([^\n·]+)/i.exec(content);
+  const headerLine = content.split('\n').find((l) => STATUS_LINE_RE.test(l)) ?? '';
+  const status = cleanInline(STATUS_LINE_RE.exec(headerLine)?.[1] ?? '').split(/\s+·\s+/)[0] ?? '';
   const updatedM = /\*{0,2}Updated\*{0,2}\s*:?\s*([^\n]+)/i.exec(content);
-  const goal = cleanInline(section(content, '## Goal')[0] ?? '');
-  const nextAction = cleanInline(section(content, '## Next action')[0] ?? '');
-  const blockers = section(content, '## Blockers')
-    .map(cleanInline)
-    .filter((l) => l && l.toLowerCase() !== 'none' && !/^todo$/i.test(l) && !/^<!--/.test(l))
-    .slice(0, 3);
+  const blockers = extractBlockers(section(content, 'Blockers'));
   return {
-    status: cleanInline(statusM?.[1] ?? ''),
+    status: cleanInline(status),
     updated: cleanInline(updatedM?.[1] ?? ''),
-    goal,
-    nextAction,
+    goal: paragraph(section(content, 'Goal')),
+    nextAction: paragraph(section(content, 'Next action')),
+    codeState: paragraph(section(content, 'Code state')),
     blockers,
     raw: content,
   };
 }
 
+interface LoadedEntries {
+  entries: Array<MemoryEntry & { content: string }>;
+  errors: string[];
+}
+
+async function readEntries(dir: string): Promise<LoadedEntries> {
+  const listing: ListResult = await listIfPresent(dir);
+  const names = listing.names.filter((f) => f.endsWith('.md') && !isTemplateName(f));
+  const out: Array<MemoryEntry & { content: string }> = [];
+  const errors: string[] = listing.error ? [listing.error] : [];
+  for (const file of names) {
+    const read: ReadResult = await readIfPresent(path.join(dir, file));
+    if (read.error) errors.push(read.error);
+    const content = read.text ?? '';
+    const { date, topic } = baseName(file);
+    out.push({ file, date, topic, title: titleOf(content, topic), content });
+  }
+  return { entries: out, errors };
+}
+
+const SEV_RANK: Record<PitfallEntry['severity'], number> = { high: 0, medium: 1, low: 2, unknown: 3 };
+
 export async function loadMemory(root: string): Promise<MemoryBank> {
   const dir = path.join(root, '.ai');
-  const exists = await pathExists(dir);
+  const errors: string[] = [];
+  const exists = await isDir(dir);
+
   if (!exists) {
     return {
       root,
@@ -148,30 +283,32 @@ export async function loadMemory(root: string): Promise<MemoryBank> {
       pitfalls: [],
       runbooks: [],
       skills: [],
+      readErrors: errors,
     };
   }
 
-  const currentRaw = await readFileSafe(path.join(dir, 'CURRENT_TASK.md'));
-  const decisionRaw = await readEntries(path.join(dir, 'decisions'));
-  const sessionRaw = await readEntries(path.join(dir, 'sessions'));
-  const runbookRaw = await readEntries(path.join(dir, 'runbooks'));
-  const pitfallRaw = await readEntries(path.join(dir, 'pitfalls', 'cases'));
-
-  const sevRank: Record<PitfallEntry['severity'], number> = { high: 0, medium: 1, low: 2, unknown: 3 };
+  const currentRead = await readIfPresent(path.join(dir, 'CURRENT_TASK.md'));
+  if (currentRead.error) errors.push(currentRead.error);
+  const decisions = await readEntries(path.join(dir, 'decisions'));
+  const sessions = await readEntries(path.join(dir, 'sessions'));
+  const runbooks = await readEntries(path.join(dir, 'runbooks'));
+  const pitfalls = await readEntries(path.join(dir, 'pitfalls', 'cases'));
+  const skills = await listIfPresent(path.join(dir, 'skills'));
 
   return {
     root,
     dir,
     exists: true,
-    currentTask: currentRaw ? parseCurrentTask(currentRaw) : null,
-    decisions: decisionRaw
+    currentTask: currentRead.text ? parseCurrentTask(currentRead.text) : null,
+    decisions: decisions.entries
       .map((e) => ({ ...e, status: decisionStatus(e.content) }))
       .sort(byDateDesc),
-    sessions: sessionRaw.sort(byDateDesc),
-    pitfalls: pitfallRaw
+    sessions: sessions.entries.sort(byDateDesc),
+    pitfalls: pitfalls.entries
       .map((e) => ({ ...e, severity: severityOf(e.content) }))
-      .sort((a, b) => sevRank[a.severity] - sevRank[b.severity] || byDateDesc(a, b)),
-    runbooks: runbookRaw.sort(byDateDesc),
-    skills: (await listFiles(path.join(dir, 'skills'))).filter((f) => f.endsWith('.md') && !isTemplateName(f)),
+      .sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || byDateDesc(a, b)),
+    runbooks: runbooks.entries.sort(byDateDesc),
+    skills: skills.names.filter((f) => f.endsWith('.md') && !isTemplateName(f)),
+    readErrors: [...errors, ...decisions.errors, ...sessions.errors, ...runbooks.errors, ...pitfalls.errors, ...(skills.error ? [skills.error] : [])],
   };
 }

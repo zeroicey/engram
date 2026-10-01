@@ -1,9 +1,10 @@
 import {
-  AI_CONTRACT,
   CONTRACT_END,
   CONTRACT_START,
   GENERATED_MARKER,
   MANAGED_MARKER,
+  inspectMarkers,
+  replaceContractBlock,
   withContract,
   withoutContract,
 } from '../templates/contract.js';
@@ -28,83 +29,141 @@ A good replacement contains, in this order:
 4. Definition of done: what must pass before a change is considered complete.
 <!-- /engram:todo -->`;
 
-const CLAUDE_IMPORTS = [
-  '@.ai/README.md',
-  '',
-  '> The two files above are the memory contract; they are pointers, not background reading.',
-];
+/** Only these tool formats have YAML frontmatter that must stay the very first bytes. */
+const NEEDS_FRONTMATTER = new Set<RuleFileKind>(['cursor', 'windsurf', 'copilot']);
 
-function frontmatterFor(def: RuleFileDef): string {
+const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/;
+const SHARED_LINE_RE = /^_Read by: .*_$/m;
+
+/** Frontmatter engram generates for a rule file that does not have one yet. */
+function defaultFrontmatter(def: RuleFileDef): string {
   switch (def.kind) {
     case 'cursor':
-      return ['---', 'description: Project memory contract and workflow rules', 'globs: **/*', 'alwaysApply: true', '---', ''].join('\n');
+      // With alwaysApply, Cursor ignores globs and description. Emitting them anyway is noise.
+      return ['---', 'alwaysApply: true', '---', ''].join('\n');
     case 'windsurf':
-      return ['---', 'trigger: always_on', 'description: Project memory contract (.ai/) and working rules', '---', ''].join('\n');
+      return ['---', 'trigger: always_on', '---', ''].join('\n');
     case 'copilot':
-      if (def.path.includes('/instructions/')) {
-        return ['---', 'applyTo: "**"', '---', ''].join('\n');
-      }
-      return '';
+      return def.path.includes('/instructions/') ? ['---', 'applyTo: "**"', '---', ''].join('\n') : '';
     default:
       return '';
   }
 }
 
-/** Body a human (or their AI assistant) is expected to replace, without the contract. */
-export function ruleBodyPlaceholder(projectName: string): string {
-  return TODO_BLOCK(projectName);
+/**
+ * Merge engram's defaults into *existing* frontmatter, key by key.
+ *
+ * A user's narrowed `globs` scope or `alwaysApply: false` is a deliberate decision. Silently
+ * promoting it to an always-on global rule is data loss with no warning, so existing keys win.
+ */
+function mergeFrontmatter(existing: string, defaults: string): string {
+  if (!defaults.trim()) return existing;
+  const parsed = FRONTMATTER_RE.exec(existing);
+  if (!parsed) return defaults;
+  const keys = new Set(
+    (parsed[1] ?? '')
+      .split('\n')
+      .map((l) => /^([A-Za-z0-9_-]+)\s*:/.exec(l)?.[1])
+      .filter((k): k is string => Boolean(k)),
+  );
+  const additions = defaults
+    .replace(/^---\n/, '')
+    .replace(/\n---\n?$/, '')
+    .split('\n')
+    .filter((l) => l.trim() && !keys.has(/^([A-Za-z0-9_-]+)\s*:/.exec(l)?.[1] ?? ''));
+  // Always return *only* the frontmatter block. Returning the whole file here silently duplicated
+  // the entire body on the next render.
+  const merged = `${parsed[1] ?? ''}${additions.length ? `\n${additions.join('\n')}` : ''}`;
+  return `---\n${merged.trim()}\n---\n`;
+}
+
+export type RuleHealth = 'ok' | 'unbalanced-markers';
+
+export interface RuleRenderResult {
+  content: string;
+  health: RuleHealth;
+  /** Human-facing explanation when `health !== 'ok'`. */
+  note?: string;
 }
 
 /**
  * Render a full rule file: frontmatter + authored body + the engram contract.
- * `existing` content is preserved when present, and only the contract block is refreshed.
+ *
+ * `existing` content is preserved: its frontmatter keys, its body, and anything engram does not own.
+ * Only the contract block, the managed marker and the shared-reader note are regenerated.
+ *
+ * When the input carries an unbalanced contract marker the file is returned **byte-identical**:
+ * engram cannot repair it safely, so it reports instead of guessing.
  */
 export function renderRuleFile(
   def: RuleFileDef,
   ctx: RuleRenderContext,
   existing?: string,
-): string {
-  const head = frontmatterFor(def);
-  const shared =
-    ctx.alsoReadBy.length > 0
-      ? `\n\n_Read by: ${ctx.alsoReadBy.join(', ')}._\n`
-      : '';
-  const SHARED_LINE_RE = /^_Read by: .*_$/m;
-const FRONTMATTER_RE = /^---\n[\s\S]*?\n---\n?/;
-/** Only these tool formats have YAML frontmatter that must stay the very first bytes. */
-const NEEDS_FRONTMATTER = new Set<RuleFileKind>(['cursor', 'windsurf', 'copilot']);
+): RuleRenderResult {
+  if (existing && inspectMarkers(existing).health === 'unbalanced') {
+    return {
+      content: existing,
+      health: 'unbalanced-markers',
+      note: `unbalanced contract marker (${countMarkers(existing)}); left untouched — remove the stray \`${CONTRACT_START}\` or \`${CONTRACT_END}\` line and re-run`,
+    };
+  }
 
-let body: string;
-  if (existing && existing.trim()) {
-    // Strip everything engram regenerates, so re-rendering never nests frontmatter,
-    // shared-reader notes, the managed marker or the contract block.
-    const stripped = existing
-      .replace(NEEDS_FRONTMATTER.has(def.kind) ? FRONTMATTER_RE : /^$/, '')
+  const isAuthored = Boolean(existing && existing.trim());
+  let body: string;
+  let head: string;
+
+  if (isAuthored) {
+    const current = existing ?? '';
+    head = NEEDS_FRONTMATTER.has(def.kind) ? mergeFrontmatter(current, defaultFrontmatter(def)) : '';
+    const stripped = current
+      .replace(FRONTMATTER_RE, '')
       .replace(SHARED_LINE_RE, '')
       .replaceAll(MANAGED_MARKER, '');
     body = withoutContract(stripped);
   } else {
-    const base = ruleBodyPlaceholder(ctx.projectName);
-    body = def.kind === 'claude' ? `${base}\n\n${CLAUDE_IMPORTS.join('\n')}` : base;
+    head = defaultFrontmatter(def);
+    body = TODO_BLOCK(ctx.projectName);
   }
-  const composed = head ? `${head}${body}${shared}` : `${body}${shared}`;
-  // The marker goes after frontmatter (Cursor/Windsurf need it first) but before the contract.
-  return withContract(`${composed.trim()}\n\n${MANAGED_MARKER}`);
+
+  const shared = ctx.alsoReadBy.length > 0 ? `\n\n_Read by: ${ctx.alsoReadBy.join(', ')}._` : '';
+  const composed = `${head}${body.trim()}${shared}`.trim();
+  return { content: withContract(`${composed}\n\n${MANAGED_MARKER}`), health: 'ok' };
 }
 
-/** Re-render only the contract block of an existing file (used by `engram sync`). */
-export function refreshContract(existing: string, def: RuleFileDef): string {
-  if (!existing.includes(CONTRACT_START)) {
-    const head = frontmatterFor(def);
-    const base = existing.startsWith(head) && head ? existing.slice(head.length) : existing;
-    return renderRuleFile(def, { projectName: 'this project', alsoReadBy: [] }, base);
+/** Convenience wrapper for callers that only need the text (tests, `--dry-run`). */
+export function renderRuleText(
+  def: RuleFileDef,
+  ctx: RuleRenderContext,
+  existing?: string,
+): string {
+  return renderRuleFile(def, ctx, existing).content;
+}
+
+/**
+ * Replace the contract block of an existing file in place.
+ * This is the *only* implementation of that splice; `renderRuleFile` composes, never splices.
+ */
+export function refreshContract(existing: string, def: RuleFileDef): RuleRenderResult {
+  if (inspectMarkers(existing).health === 'unbalanced') {
+    return {
+      content: existing,
+      health: 'unbalanced-markers',
+      note: `unbalanced contract marker (${countMarkers(existing)}); left untouched — remove the stray \`${CONTRACT_START}\` or \`${CONTRACT_END}\` line and re-run`,
+    };
   }
-  const start = existing.indexOf(CONTRACT_START);
-  const end = existing.indexOf(CONTRACT_END, start) + CONTRACT_END.length;
-  return existing.slice(0, start) + `${CONTRACT_START}\n${AI_CONTRACT}${CONTRACT_END}` + existing.slice(end);
+  if (inspectMarkers(existing).health === 'absent') {
+    // No block yet: adopt the file, preserving everything that is already there.
+    return renderRuleFile(def, { projectName: 'this project', alsoReadBy: [] }, existing);
+  }
+  return { content: replaceContractBlock(existing), health: 'ok' };
 }
 
 /** Header stamped on fully generated files (skill sinks) so they can be safely overwritten. */
 export function generatedHeader(sourcePath: string): string {
   return `${GENERATED_MARKER} generated by engram from ${sourcePath} — do not edit; run \`engram sync\``;
+}
+
+function countMarkers(text: string): string {
+  const report = inspectMarkers(text);
+  return `${report.starts} start / ${report.ends} end`;
 }
