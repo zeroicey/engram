@@ -29,6 +29,20 @@ A good replacement contains, in this order:
 4. Definition of done: what must pass before a change is considered complete.
 <!-- /engram:todo -->`;
 
+/**
+ * Claude Code's @-import is deliberately NOT used for the bank.
+ *
+ * An `@.ai/README.md` line is not a pointer: Claude loads the target in full, every session —
+ * roughly 6.5 KB of always-on context, ~2,300 tokens — on top of the contract itself. That is
+ * exactly what the contract tells the model not to do ("read on demand, never paste wholesale").
+ * These stubs name the files and the trigger instead.
+ */
+const CLAUDE_POINTERS = [
+  '> Memory lives in `.ai/`. Read on demand with file tools, never wholesale:',
+  '> `.ai/CURRENT_TASK.md` (state), `.ai/ARCHITECTURE.md` (boundaries),',
+  '> `.ai/decisions/` (binding), `.ai/skills/` (actions).',
+];
+
 /** Only these tool formats have YAML frontmatter that must stay the very first bytes. */
 const NEEDS_FRONTMATTER = new Set<RuleFileKind>(['cursor', 'windsurf', 'copilot']);
 
@@ -122,7 +136,7 @@ export function renderRuleFile(
     body = withoutContract(stripped);
   } else {
     head = defaultFrontmatter(def);
-    body = TODO_BLOCK(ctx.projectName);
+    body = def.kind === 'claude' ? `${TODO_BLOCK(ctx.projectName)}\n\n${CLAUDE_POINTERS.join('\n')}` : TODO_BLOCK(ctx.projectName);
   }
 
   const shared = ctx.alsoReadBy.length > 0 ? `\n\n_Read by: ${ctx.alsoReadBy.join(', ')}._` : '';

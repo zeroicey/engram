@@ -95,7 +95,10 @@ You are the staff engineer who has just joined **${f.name}**. You are writing th
 (${outputPaths}) for this specific repository, for the tools listed below. Your output replaces
 generic boilerplate: every claim must be checkable against this codebase.
 
-## Project facts (already detected — verify, do not trust blindly)
+## Project facts (detected automatically — verify each one before you rely on it)
+
+A fact below is a *starting point*, not a source of truth. It may be stale, or wrong because the
+detector does not know your conventions. Correct anything that does not match the repository.
 
 ${factsBlock}
 ${ruleFileAdvice}
@@ -120,14 +123,19 @@ For **each** tool section below, write or update that tool's rule file(s) so tha
    "best practices". Where the repo is inconsistent, say so in one line instead of inventing a rule.
 3. **Scope is bounded.** Keep the file small enough to be followed (the per-tool limit is in its
    section). Depth goes into \`.ai/\`, not into the rule file.
-4. **The memory contract is preserved.** The file already ends with this block, delimited by
+4. **The memory contract is preserved.** Every rule file ends with this block, delimited by
    \`<!-- engram:contract:start -->\` / \`<!-- engram:contract:end -->\`:
 
 ${indent(AI_CONTRACT, 4)}
 
-   **Rules for you about that block:** write *only* the content above the block. Never edit,
-   reword, move or delete it — \`engram sync\` regenerates it and would overwrite your version.
-5. **Placeholders are gone.** Remove the \`engram:todo\` block and write real content in its place.
+   **Rules for you about that block:** write *only* the content above it. Never edit, reword, move
+   or delete it — \`engram sync\` regenerates it and would overwrite your version. If the file does
+   not exist yet, create it **with** this block appended verbatim at the end. If it already exists,
+   leave whatever contract block is there alone and write only above it.
+5. **Placeholders are gone.** If the file contains an \`engram:todo\` block, replace it with real
+   content and delete the block. If it has none (the file pre-existed), just write the body.
+6. **Every path you cite must exist.** Do not reference a script, directory or \`.ai/\` file you
+   have not read or listed. A pointer that does not resolve is worse than no pointer.
 
 ${perTool}
 
@@ -137,7 +145,9 @@ ${perTool}
 2. Read \`.ai/ARCHITECTURE.md\` and the newest \`.ai/decisions/\` entries; do not contradict them.
 3. Write the rule file body per tool. When two tools share a file (e.g. \`AGENTS.md\`), write it
    once so it works for every reader of that file.
-4. Finish by running the verification commands you wrote down, and report anything that failed.
+4. Finish by running the verification commands you wrote down. If you cannot run them — read-only
+   sandbox, no network, missing toolchain — list them explicitly as **unverified** rather than
+   claiming a result. Never state a command passed unless you saw it pass.
 
 ## Output format
 

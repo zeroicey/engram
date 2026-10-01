@@ -78,7 +78,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   if (tools.length === 0) {
     warnings.push('No valid tools selected — the .ai/ bank was created, but no rule file was written.');
   }
-  const facts = await detectProject(opts.root);
+  const facts = await detectProject(opts.root, ruleFilePaths(tools));
   const ctx: SkeletonContext = { projectName: facts.name, today: todayISO() };
   const files: InitResult['files'] = [];
   const dryRun = opts.dryRun === true;
@@ -127,6 +127,11 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   }
 
   return { files, tools, bootstrapPath, warnings };
+}
+
+/** Every rule-file path the selected tools know about, de-duplicated. */
+export function ruleFilePaths(tools: ToolDef[]): string[] {
+  return [...new Set(tools.flatMap((t) => t.ruleFiles.map((f) => f.path)))];
 }
 
 /** Copy canonical `.ai/skills/*.md` into every tool-native skill/command directory. */

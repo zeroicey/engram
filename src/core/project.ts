@@ -12,7 +12,14 @@ export interface ProjectFacts {
   /** Top-level directories (excluding dotfiles and heavy trees). */
   dirs: string[];
   hasGit: boolean;
-  /** Existing AI-tool rule files found in the repo. */
+  /**
+   * Pre-existing AI-tool rule files found in the repo, excluding the ones engram generated.
+   *
+   * The candidate list is supplied by the caller from the tool registry rather than hardcoded in
+   * this leaf: duplicating vendor filenames here meant adding a tool touched two files, and
+   * forgetting the second failed *silently* — `init` simply stopped reporting that a rule file
+   * already existed, and the bootstrap meta-prompt told the model none was there.
+   */
   existingRuleFiles: string[];
 }
 
@@ -147,7 +154,11 @@ export function asciiSlug(input: string): string {
 export function todayISO(d = new Date()): string {
   return d.toISOString().slice(0, 10);
 }
-export async function detectProject(root: string): Promise<ProjectFacts> {
+export async function detectProject(
+  root: string,
+  /** Rule-file paths to probe. Supplied from `adapters/index.ts` by the caller. */
+  ruleFileCandidates: readonly string[] = [],
+): Promise<ProjectFacts> {
   return {
     root,
     name: await detectProjectName(root),
@@ -155,7 +166,7 @@ export async function detectProject(root: string): Promise<ProjectFacts> {
     scripts: await detectScripts(root),
     dirs: await detectDirs(root),
     hasGit: await pathExists(path.join(root, '.git')),
-    existingRuleFiles: await detectRuleFiles(root),
+    existingRuleFiles: await detectRuleFiles(root, ruleFileCandidates),
   };
 }
 
@@ -243,20 +254,9 @@ async function detectDirs(root: string): Promise<string[]> {
   return dirs.sort((a, b) => a.localeCompare(b));
 }
 
-const RULE_FILE_CANDIDATES = [
-  'AGENTS.md',
-  'AGENTS.override.md',
-  'CLAUDE.md',
-  'GEMINI.md',
-  '.cursorrules',
-  '.github/copilot-instructions.md',
-  '.windsurfrules',
-  '.clinerules',
-];
-
-async function detectRuleFiles(root: string): Promise<string[]> {
+async function detectRuleFiles(root: string, candidates: readonly string[]): Promise<string[]> {
   const found: string[] = [];
-  for (const c of RULE_FILE_CANDIDATES) {
+  for (const c of candidates) {
     const abs = path.join(root, c);
     if (!(await pathExists(abs))) continue;
     const content = (await readFileSafe(abs)) ?? '';

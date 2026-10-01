@@ -203,11 +203,17 @@ test('project detection reads stack, scripts and existing rule files', async (t)
   await sb.write('CLAUDE.md', '# rules');
   await sb.write('requirements.txt', '');
 
-  const facts = await detectProject(sb.root);
+  // Rule-file candidates now come from the registry, not from a hardcoded list in core/.
+  const facts = await detectProject(sb.root, ['AGENTS.md', 'CLAUDE.md', '.cursorrules']);
   assert.equal(facts.name, 'widget');
   assert.ok(facts.stack.includes('node'));
   assert.ok(facts.stack.includes('python'));
   assert.deepEqual(facts.existingRuleFiles, ['CLAUDE.md']);
+  assert.deepEqual(
+    await detectProject(sb.root, []).then((f) => f.existingRuleFiles),
+    [],
+    'with no candidates the leaf layer knows nothing about vendors',
+  );
   assert.equal(facts.hasGit, false);
 });
 

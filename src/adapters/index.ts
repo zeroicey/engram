@@ -129,7 +129,8 @@ export const TOOLS: ToolDef[] = [
       // wins, so the command file would be a permanently shadowed dead file.
     ],
     styleGuide: `- Concise and imperative; Claude follows short checklists better than prose essays.
-- Use the @-import feature (\`@.ai/ARCHITECTURE.md\`) instead of duplicating content.
+- Do NOT @-import \`.ai/\` files: an import is loaded in full every session, which contradicts the
+  contract's own "read on demand". Name the path and the trigger instead.
 - Never restate the whole memory bank in CLAUDE.md: point at it, and describe when to read it.
 - Prefer "do X, then verify with Y" over "best practices".`,
   },

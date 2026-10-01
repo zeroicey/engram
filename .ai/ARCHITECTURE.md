@@ -64,11 +64,22 @@ what makes the whole pipeline testable in memory.
 
 1. **The contract block is machine-owned.** No human or model text ever lives between
    `<!-- engram:contract:start -->` and `<!-- engram:contract:end -->`; `sync` rewrites it in place.
-2. **`engram dump` never exceeds `--max-bytes` (default 1500).** Verified by test, not by hope.
-3. **`init` never clobbers human content.** Existing rule files keep their body and only gain the
-   contract; `--force` is required to regenerate.
+   The splice has exactly one implementation (`replaceContractBlock` in `templates/contract.ts`),
+   it ignores markers inside fenced code blocks, and it refuses to act on an unpaired marker.
+   **Enforced:** `test/templates.test.ts`.
+2. **`engram dump` never exceeds `--max-bytes` (default 1500), in UTF-8 bytes.** Content is dropped
+   by section priority, then by line, then by a byte-boundary-safe hard cut. `truncated` is `true`
+   whenever *anything* was left out, so the CLI never reports "under budget" while having silently
+   dropped the binding decisions. **Enforced:** the `REGRESSION` cases in
+   `test/fingerprint.test.ts`, including `maxBytes: 0`.
+3. **`init` never clobbers human content.** Existing rule files keep their body *and* their
+   frontmatter keys; only the contract block, the managed marker and the shared-reader note are
+   regenerated. A narrowed `globs` scope or `alwaysApply: false` is never promoted. `--force` is
+   required to replace a body. **Enforced:** `test/templates.test.ts`; an unpaired marker aborts
+   the whole operation rather than guessing a slice.
 4. **Canonical skills live once**, in `.ai/skills/*.md`. Tool carriers are generated and marked.
-5. **Zero runtime dependencies.** `package.json` `dependencies` stays absent.
+5. **Zero runtime dependencies.** `package.json` `dependencies` stays absent. **Enforced:** a test
+   asserts the field is `undefined`.
 6. **One decision per file, one topic per file.** Filenames are `YYYY-MM-DD-<kebab-topic>.md`.
 7. **`_`-prefixed files are inert**: templates and examples, skipped by `dump` and `sync`.
 
@@ -76,10 +87,18 @@ what makes the whole pipeline testable in memory.
 
 - **No editor-side integration yet.** `dump` is pasted manually; a Claude Code hook or Pi extension
   that injects it automatically is the obvious next layer, and is deliberately out of v0.1.
-- **Adapters encode each tool's conventions as of writing.** Cursor `.mdc`, Windsurf triggers and
-  Copilot `applyTo` all move; `TOOLS` in `src/adapters/index.ts` is the single place to fix, and
-  `engram tools` output is the inventory.
-- **`dump` parses Markdown heuristically** (regex on headings and emoji status). A deliberately
-  broken `CURRENT_TASK.md` degrades the fingerprint; it never throws.
+- **Adapters encode each tool's conventions as of writing, and those conventions move.** Cursor
+  `.mdc`, Windsurf triggers and Copilot `applyTo` all change; a review already found six stale or
+  invented claims. Vendor knowledge lives in **two** places by design, and both must change
+  together: the tool record (paths, skill sinks, style guide) in `TOOLS` in
+  `src/adapters/index.ts`, and the frontmatter dialect in `frontmatterFor()` in
+  `src/adapters/rules.ts`. `test/architecture.test.ts` fails if this section stops naming both.
+  `engram tools` prints the inventory.
+- **Vendor facts are not machine-checkable.** Each claim was verified against vendor docs by hand
+  during review; nothing re-verifies them, so they rot silently. A scheduled re-check (or an
+  `/audit` step that re-reads the docs) is a candidate for a later version.
+- **`dump` parses Markdown heuristically.** A deliberately broken `CURRENT_TASK.md` degrades the
+  fingerprint; it never throws. Unreadable paths (EACCES, a `.ai` file where a directory belongs)
+  are reported as `readErrors` on stderr rather than being reported as "no decisions".
 - **No `engram doctor`.** Drift detection today lives in the `/audit` skill spec, i.e. in the model,
   not in the CLI. A machine version is a candidate for v0.2.
