@@ -25,6 +25,8 @@
   },
   "files": [
     "build/src",
+    "src",
+    "tsconfig.json",
     "README.md",
     "LICENSE"
   ],
