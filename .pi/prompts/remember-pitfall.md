@@ -8,7 +8,7 @@ argument-hint: '<case> — short kebab-case name of the failure mode'
 Store one failure mode well enough that a future session recognises it before burning
 time on it again. A pitfall without a guard is a diary entry; require the guard.
 
-$ARGUMENTS: `$ARGUMENTS` is the case slug. If absent, propose one from the symptom and confirm.
+ARGUMENTS: `$ARGUMENTS` is the case slug. If absent, propose one from the symptom and confirm.
 
 ## Procedure
 

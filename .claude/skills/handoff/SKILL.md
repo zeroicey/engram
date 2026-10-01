@@ -8,7 +8,7 @@ description: Compress the current session into .ai/sessions/YYYY-MM-DD-<topic>-h
 Compress everything that matters about this session into the memory bank so the next
 session starts warm. Never dump a transcript; reconstruct state.
 
-ARGUMENTS: `ARGUMENTS` is the optional topic slug. If absent, derive one from the dominant task.
+ARGUMENTS: `<ARGUMENTS>` is the optional topic slug. If absent, derive one from the dominant task.
 
 ## Procedure
 

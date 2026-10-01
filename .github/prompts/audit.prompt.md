@@ -1,5 +1,5 @@
 ---
-mode: agent
+agent: agent
 description: Check consistency between the code and the memory bank: architecture drift, decisions that were silently violated, stale runbooks, pitfalls without guards, handoffs that contradict CURRENT_TASK. Use before a release, before a large refactor, after returning from a long absence, or when the user says "audit", "is the doc still true", "drift check".
 ---
 
@@ -8,7 +8,7 @@ description: Check consistency between the code and the memory bank: architectur
 Find where the bank and the code have drifted, and report it as a short, ranked list of
 concrete fixes. An audit that only says "docs look fine" is a failed audit.
 
-$ARGUMENTS: `$ARGUMENTS` optionally narrows the audit to a path or subsystem.
+ARGUMENTS: `$ARGUMENTS` optionally narrows the audit to a path or subsystem.
 
 ## Procedure
 

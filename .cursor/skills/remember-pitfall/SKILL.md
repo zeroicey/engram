@@ -8,7 +8,7 @@ description: Record a decoded failure mode as .ai/pitfalls/cases/<case>.md: symp
 Store one failure mode well enough that a future session recognises it before burning
 time on it again. A pitfall without a guard is a diary entry; require the guard.
 
-ARGUMENTS: `ARGUMENTS` is the case slug. If absent, propose one from the symptom and confirm.
+ARGUMENTS: `<ARGUMENTS>` is the case slug. If absent, propose one from the symptom and confirm.
 
 ## Procedure
 

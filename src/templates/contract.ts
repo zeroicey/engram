@@ -110,6 +110,19 @@ export interface ContractSpan {
 }
 
 /**
+ * A marker only counts when it *is* the line.
+ *
+ * A rule file that documents the contract legitimately mentions the markers inline in prose —
+ * "never hand-edit the block between `<!-- engram:contract:start -->` and
+ * `<!-- engram:contract:end -->`". Matching those inline occurrences made the file look
+ * unbalanced, the safety check then refused to write, and `withContract` silently dropped the
+ * real contract block. Structural means "owns its line".
+ */
+function ownsMarker(text: string, marker: string): boolean {
+  return text.trim() === marker;
+}
+
+/**
  * Locate the contract block. Returns `null` when it is absent, unbalanced, or ambiguous.
  * Refusing to guess is the point: a wrong span is data loss.
  */
@@ -118,12 +131,10 @@ export function findContractSpan(text: string): ContractSpan | null {
   for (const line of scanLines(text)) {
     if (line.inFence) continue;
     if (open === null) {
-      const at = line.text.indexOf(CONTRACT_START);
-      if (at !== -1) open = line.start + at;
+      if (ownsMarker(line.text, CONTRACT_START)) open = line.start;
       continue;
     }
-    const at = line.text.indexOf(CONTRACT_END);
-    if (at !== -1) return { start: open, end: line.start + at + CONTRACT_END.length };
+    if (ownsMarker(line.text, CONTRACT_END)) return { start: open, end: line.start + CONTRACT_END.length };
   }
   return null;
 }
@@ -145,8 +156,8 @@ export function inspectMarkers(text: string): MarkerReport {
   let ends = 0;
   for (const line of scanLines(text)) {
     if (line.inFence) continue;
-    starts += line.text.split(CONTRACT_START).length - 1;
-    ends += line.text.split(CONTRACT_END).length - 1;
+    if (ownsMarker(line.text, CONTRACT_START)) starts += 1;
+    if (ownsMarker(line.text, CONTRACT_END)) ends += 1;
   }
   const span = findContractSpan(text);
   if (span === null) return { health: starts > 0 || ends > 0 ? 'unbalanced' : 'absent', starts, ends, span };

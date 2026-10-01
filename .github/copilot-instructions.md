@@ -1,18 +1,18 @@
 # engram
 
 Portable project memory for AI coding tools. Node ≥ 20, ESM TypeScript, zero runtime
-dependencies, built with `tsc` only.
+dependencies, `tsc`-only build.
 
 - Build: `npm run build`. Test: `npm test`. Types: `npm run typecheck`.
 - `tsconfig.json` `outDir` and `package.json` `bin` must be the same path; `tsc` exiting 0 proves
   neither that output landed nor that tests pass.
 - Keep `dependencies` absent from `package.json`. Dev-only: `typescript`, `@types/node`.
 - ESM with `NodeNext`: relative imports end in `.js`; type-only imports use `import type`.
-- `src/core/` must not import from `src/commands/`, `src/adapters/` or
-  `src/templates/meta-prompt.ts`. `src/templates/` must not touch the filesystem.
+- `src/core/` must not import from `src/commands/`, `src/adapters/` or `src/templates/`, and
+  `src/templates/` and `src/adapters/` must perform no filesystem access.
 - Never edit the block between `<!-- engram:contract:start -->` and `<!-- engram:contract:end -->`.
-- Skill carriers under `.claude/`, `.pi/`, `.cursor/`, `.gemini/`, `.github/prompts/` are
-  generated; edit `.ai/skills/<name>.md` and run `engram sync`.
+- Skill carriers under `.claude/`, `.pi/skills/`, `.cursor/skills/`, `.gemini/commands/`,
+  `.github/prompts/` are generated; edit `.ai/skills/<name>.md` and run `engram sync`.
 - Add a test in `test/` for every behaviour change; suites run against compiled output in `build/`.
 - Project state lives in `.ai/`: read `.ai/CURRENT_TASK.md` first, write decisions, pitfalls and
   task state back into the same change.

@@ -9,25 +9,18 @@ You are the staff engineer who has just joined **engram**. You are writing the A
 (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/engram-memory.mdc`, `.github/copilot-instructions.md`, `.github/instructions/engram-memory.instructions.md`, `GEMINI.md`, `.windsurf/rules/engram-memory.md`) for this specific repository, for the tools listed below. Your output replaces
 generic boilerplate: every claim must be checkable against this codebase.
 
-## Project facts (already detected — verify, do not trust blindly)
+## Project facts (detected automatically — verify each one before you rely on it)
+
+A fact below is a *starting point*, not a source of truth. It may be stale, or wrong because the
+detector does not know your conventions. Correct anything that does not match the repository.
 
 - Project name: `engram`
 - Root: `/data/dev/engram`
-- Detected stack:   - node
-  - node >=20
-  - typescript
+- Detected stack: `node`, `node >=20`, `typescript`
 - Top-level directories: `src/`, `test/`
-- npm scripts:   - build
-  - test
-  - typecheck
-  - clean
-  - prepublishOnly
-- Git repository: no
+- npm scripts: `build`, `test`, `typecheck`, `clean`, `prepublishOnly`
+- Git repository: yes
 - No AI rule file exists yet: create them.
-
-## Team norms supplied by the user (must be honoured verbatim)
-
-Zero runtime dependencies. ESM-only, Node >=20. No framework, no bundler: tsc only. Tests use node:test against compiled output. Every public function needs a test or an explicit comment explaining why not.
 
 
 ## What exists already: the memory bank
@@ -52,7 +45,7 @@ For **each** tool section below, write or update that tool's rule file(s) so tha
    "best practices". Where the repo is inconsistent, say so in one line instead of inventing a rule.
 3. **Scope is bounded.** Keep the file small enough to be followed (the per-tool limit is in its
    section). Depth goes into `.ai/`, not into the rule file.
-4. **The memory contract is preserved.** The file already ends with this block, delimited by
+4. **The memory contract is preserved.** Every rule file ends with this block, delimited by
    `<!-- engram:contract:start -->` / `<!-- engram:contract:end -->`:
 
     ## Project memory bank (`.ai/`) — required contract
@@ -94,9 +87,14 @@ For **each** tool section below, write or update that tool's rule file(s) so tha
       it cannot, this table is the fallback contract — follow it literally.
     - If the bank and the code disagree, the bank is stale: fix the bank in the same change.
 
-   **Rules for you about that block:** write *only* the content above the block. Never edit,
-   reword, move or delete it — `engram sync` regenerates it and would overwrite your version.
-5. **Placeholders are gone.** Remove the `engram:todo` block and write real content in its place.
+   **Rules for you about that block:** write *only* the content above it. Never edit, reword, move
+   or delete it — `engram sync` regenerates it and would overwrite your version. If the file does
+   not exist yet, create it **with** this block appended verbatim at the end. If it already exists,
+   leave whatever contract block is there alone and write only above it.
+5. **Placeholders are gone.** If the file contains an `engram:todo` block, replace it with real
+   content and delete the block. If it has none (the file pre-existed), just write the body.
+6. **Every path you cite must exist.** Do not reference a script, directory or `.ai/` file you
+   have not read or listed. A pointer that does not resolve is worse than no pointer.
 
 ### `agents` — AGENTS.md (Codex, OpenCode, Cline, Amp, Zed, Aider …)
 
@@ -121,12 +119,12 @@ Write:
      Purpose: Primary context file. Personal overrides belong in CLAUDE.local.md (gitignored).
 
 Skill carrier:
-- `.claude/skills/` — one `SKILL.md` per skill (Native Agent Skills; invoked as /skill:<name>.)
-- `.claude/commands/` — one `.md` slash command per skill (Slash commands: /handoff, /audit, …)
+- `.claude/skills/` — one `SKILL.md` per skill (Native Agent Skills, invoked as /<name>.)
 
 Style rules for this tool:
 - Concise and imperative; Claude follows short checklists better than prose essays.
-- Use the @-import feature (`@.ai/ARCHITECTURE.md`) instead of duplicating content.
+- Do NOT @-import `.ai/` files: an import is loaded in full every session, which contradicts the
+  contract's own "read on demand". Name the path and the trigger instead.
 - Never restate the whole memory bank in CLAUDE.md: point at it, and describe when to read it.
 - Prefer "do X, then verify with Y" over "best practices".
 
@@ -137,12 +135,12 @@ Write:
      Purpose: Rule file with alwaysApply so the memory contract is always in context.
 
 Skill carrier:
-- `.cursor/skills/` — one `SKILL.md` per skill (Experimental skill support; harmless when unused.)
+- `.cursor/skills/` — one `SKILL.md` per skill (Project-level skills; `.agents/skills/` is honoured as well.)
 
 Style rules for this tool:
 - `.mdc` files need frontmatter: `description`, `globs`, `alwaysApply`.
 - One topic per rule file; keep each under ~500 lines and use `@path` references for depth.
-- Use `globs` for file-type-specific rules (e.g. `**/*.test.ts`), `alwaysApply: true` for the memory contract only.
+- Use `globs` for file-type-specific rules; for an always-on rule Cursor ignores `globs` and `description`, so emit `alwaysApply: true` alone.
 - Do not repeat content between rules — Cursor merges all matching rules and duplicates waste context.
 
 ### `pi` — Pi (earendil-works)
@@ -170,13 +168,13 @@ Write:
      Purpose: Path-scoped instruction file with applyTo so the contract survives future edits.
 
 Skill carrier:
-- `.github/prompts/` — one `.md` slash command per skill (Reusable prompt files: /handoff, /audit, …)
+- `.github/prompts/` — one `.md` slash command per skill (Reusable prompt files; available in VS Code, Visual Studio and JetBrains IDEs.)
 
 Style rules for this tool:
 - Copilot instructions are short bullet lists; avoid narrative.
 - Use `.instructions.md` files with `applyTo` globs for anything path-specific.
 - Phrase as constraints ("never commit .env", "always run npm test before proposing a patch").
-- Do not exceed ~200 lines total; Copilot truncates long instruction sets.
+- Keep the two instruction files from duplicating each other: Copilot merges every matching file, so the same contract twice costs twice the tokens.
 
 ### `gemini` — Gemini CLI
 
@@ -202,7 +200,7 @@ Skill carrier:
 - _(no project-scoped skill support; the contract block is the fallback)_
 
 Style rules for this tool:
-- Rule frontmatter: `trigger: always_on | model_decision | manual`, `description`, optional `globs`.
+- Rule frontmatter: `trigger: always_on | model_decision | glob | manual`, `description`, and `globs:` when the mode is `glob`.
 - Reserve `always_on` for the memory contract; everything else should be `model_decision`.
 - Short, imperative, one rule per bullet. Windsurf cascades rules from the workspace root down.
 
@@ -213,7 +211,7 @@ Write:
      Purpose: The vendor-neutral contract honoured by most non-Anthropic agents.
 
 Skill carrier:
-- _(no project-scoped skill support; the contract block is the fallback)_
+- `.agents/skills/` — one `SKILL.md` per skill (Codex scans `.agents/skills` from cwd up to the repo root (same dir as the `agents` tool).)
 
 Style rules for this tool:
 - Lead with the sandbox model: what Codex may run without approval, what needs it.
@@ -227,7 +225,9 @@ Style rules for this tool:
 2. Read `.ai/ARCHITECTURE.md` and the newest `.ai/decisions/` entries; do not contradict them.
 3. Write the rule file body per tool. When two tools share a file (e.g. `AGENTS.md`), write it
    once so it works for every reader of that file.
-4. Finish by running the verification commands you wrote down, and report anything that failed.
+4. Finish by running the verification commands you wrote down. If you cannot run them — read-only
+   sandbox, no network, missing toolchain — list them explicitly as **unverified** rather than
+   claiming a result. Never state a command passed unless you saw it pass.
 
 ## Output format
 

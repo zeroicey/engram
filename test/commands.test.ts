@@ -100,13 +100,21 @@ test('sync refreshes a damaged contract and re-materialises carriers', async (t)
   const sb = await sandbox();
   t.after(() => sb.cleanup());
   await runInit({ root: sb.root, toolIds: ['agents', 'claude'] });
-  await sb.write('AGENTS.md', (await sb.read('AGENTS.md')).replace(AI_CONTRACT, 'broken'));
+  const rendered = await sb.read('AGENTS.md');
+  const start = rendered.indexOf('<!-- engram:contract:start');
+  const end = rendered.indexOf('<!-- engram:contract:end');
+  // Damage the body only; a real "older engram wrote this" keeps both markers on their own lines.
+  await sb.write(
+    'AGENTS.md',
+    `${rendered.slice(0, start)}\n<!-- engram:contract:start v1 -->\n## stale\n${rendered.slice(end)}`,
+  );
   await sb.write('.claude/skills/handoff/SKILL.md', 'hand-edited\n');
 
   const res = await runSync(sb.root, ['agents', 'claude']);
 
   assert.ok(res.ruleFiles.find((f) => f.path === 'AGENTS.md')?.action === 'updated');
   assert.ok((await sb.read('AGENTS.md')).includes(AI_CONTRACT));
+  assert.ok(!(await sb.read('AGENTS.md')).includes('## stale'), 'the stale body is gone');
   const skill = await sb.read('.claude/skills/handoff/SKILL.md');
   assert.ok(skill.includes('<!-- engram:generated -->'), 'hand edits to carriers are replaced');
 

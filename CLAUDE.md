@@ -1,10 +1,9 @@
 # engram — working agreements
 
-@.ai/README.md
-@.ai/ARCHITECTURE.md
-
-> Imports above are the memory contract and the architecture source of truth. Read them on demand;
-> do not paste them back into this file, and do not edit them here.
+> Memory lives in `.ai/`. Read on demand with file tools, **never wholesale** — an `@`-import is
+> loaded in full on every session, which is exactly what the contract below forbids:
+> `.ai/CURRENT_TASK.md` (state) · `.ai/ARCHITECTURE.md` (boundaries) ·
+> `.ai/decisions/` (binding) · `.ai/skills/` (actions)
 
 ## Before editing anything
 

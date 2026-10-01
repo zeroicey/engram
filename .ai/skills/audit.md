@@ -6,7 +6,7 @@ description: Check consistency between the code and the memory bank: architectur
 Find where the bank and the code have drifted, and report it as a short, ranked list of
 concrete fixes. An audit that only says "docs look fine" is a failed audit.
 
-ARGUMENTS: `ARGUMENTS` optionally narrows the audit to a path or subsystem.
+ARGUMENTS: `<ARGUMENTS>` optionally narrows the audit to a path or subsystem.
 
 ## Procedure
 

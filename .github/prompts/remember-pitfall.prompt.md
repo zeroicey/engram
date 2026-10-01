@@ -1,5 +1,5 @@
 ---
-mode: agent
+agent: agent
 description: Record a decoded failure mode as .ai/pitfalls/cases/<case>.md: symptom, root cause, fix and a guard that makes it unrepeatable. Use when hitting a confusing bug, a silent wrong-result, a flaky test, an environment-only trap, or when the user says "remember this", "don't repeat that", "note this pitfall".
 ---
 
@@ -8,7 +8,7 @@ description: Record a decoded failure mode as .ai/pitfalls/cases/<case>.md: symp
 Store one failure mode well enough that a future session recognises it before burning
 time on it again. A pitfall without a guard is a diary entry; require the guard.
 
-$ARGUMENTS: `$ARGUMENTS` is the case slug. If absent, propose one from the symptom and confirm.
+ARGUMENTS: `$ARGUMENTS` is the case slug. If absent, propose one from the symptom and confirm.
 
 ## Procedure
 

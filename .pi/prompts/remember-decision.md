@@ -8,7 +8,7 @@ argument-hint: '<topic> — short kebab-case topic for the decision'
 Capture one decision with enough alternatives and consequences that it is never
 re-litigated from scratch. This replaces ad-hoc ideas directories and ad-hoc chat plans.
 
-$ARGUMENTS: `$ARGUMENTS` is the topic slug. If absent, derive it from the choice under discussion.
+ARGUMENTS: `$ARGUMENTS` is the topic slug. If absent, derive it from the choice under discussion.
 
 ## Procedure
 

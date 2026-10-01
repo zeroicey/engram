@@ -1,5 +1,5 @@
 ---
-mode: agent
+agent: agent
 description: Compress the current session into .ai/sessions/YYYY-MM-DD-<topic>-handoff.md and refresh .ai/CURRENT_TASK.md so a fresh session resumes without re-deriving context. Use when ending a session, after a long debugging detour, after context compaction, or when the user says "wrap up", "handoff", "new session".
 ---
 
@@ -8,7 +8,7 @@ description: Compress the current session into .ai/sessions/YYYY-MM-DD-<topic>-h
 Compress everything that matters about this session into the memory bank so the next
 session starts warm. Never dump a transcript; reconstruct state.
 
-$ARGUMENTS: `$ARGUMENTS` is the optional topic slug. If absent, derive one from the dominant task.
+ARGUMENTS: `$ARGUMENTS` is the optional topic slug. If absent, derive one from the dominant task.
 
 ## Procedure
 

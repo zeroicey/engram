@@ -66,6 +66,8 @@ Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templ
 - Network is not needed for anything except `npm install` / `npm publish`.
 - Never rewrite `.ai/` history: decisions are flipped (`💭` → `✅` → `🪦`), not deleted.
 
+_Read by: pi, codex._
+
 <!-- engram:managed -->
 
 <!-- engram:contract:start v1 -->

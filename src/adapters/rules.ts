@@ -71,7 +71,11 @@ function defaultFrontmatter(def: RuleFileDef): string {
  * promoting it to an always-on global rule is data loss with no warning, so existing keys win.
  */
 function mergeFrontmatter(existing: string, defaults: string): string {
-  if (!defaults.trim()) return existing;
+  // No defaults to merge (e.g. `.github/copilot-instructions.md`, which has no frontmatter at
+  // all) means there is no frontmatter to emit. Returning `existing` here would splice the whole
+  // file back in ahead of the body and duplicate it on every render — the marker count is what
+  // exposed it: 1 → 3 after a few runs.
+  if (!defaults.trim()) return '';
   const parsed = FRONTMATTER_RE.exec(existing);
   if (!parsed) return defaults;
   const keys = new Set(
@@ -130,7 +134,7 @@ export function renderRuleFile(
     const current = existing ?? '';
     head = NEEDS_FRONTMATTER.has(def.kind) ? mergeFrontmatter(current, defaultFrontmatter(def)) : '';
     const stripped = current
-      .replace(FRONTMATTER_RE, '')
+      .replace(NEEDS_FRONTMATTER.has(def.kind) ? FRONTMATTER_RE : /^$/, '')
       .replace(SHARED_LINE_RE, '')
       .replaceAll(MANAGED_MARKER, '');
     body = withoutContract(stripped);

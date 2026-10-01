@@ -22,6 +22,14 @@ const CURSOR_RULE = { path: '.cursor/rules/engram-memory.mdc', kind: 'cursor' as
 const WS_RULE = { path: '.windsurf/rules/engram-memory.md', kind: 'windsurf' as const, note: 'test' };
 const CTX = { projectName: 'demo', alsoReadBy: [] as string[] };
 
+/** Replace the contract *body* while keeping both markers on their own lines — the realistic
+ *  shape of "an older engram version wrote this" and of a hand-mangled block. */
+function staleContract(rendered: string): string {
+  const start = rendered.indexOf(CONTRACT_START);
+  const end = rendered.indexOf(CONTRACT_END);
+  return `${rendered.slice(0, start + CONTRACT_START.length)}\n## a stale contract body\n${rendered.slice(end)}`;
+}
+
 // ── contract splicing ────────────────────────────────────────────────────────
 
 test('withContract wraps a body once and is idempotent', () => {
@@ -33,10 +41,10 @@ test('withContract wraps a body once and is idempotent', () => {
 });
 
 test('withContract replaces a stale contract body in place', () => {
-  const stale = withContract('# Rules').replace(AI_CONTRACT, 'OLD AND WRONG');
+  const stale = staleContract(withContract('# Rules'));
   const fresh = withContract(stale);
   assert.ok(fresh.includes(AI_CONTRACT));
-  assert.ok(!fresh.includes('OLD AND WRONG'));
+  assert.ok(!fresh.includes('a stale contract body'));
   assert.ok(fresh.startsWith('# Rules'), 'authored body is preserved verbatim');
 });
 
@@ -70,6 +78,34 @@ test('REGRESSION an unpaired contract marker never truncates the file', () => {
   assert.equal(rendered.content, damaged, 'renderRuleFile must refuse too');
   assert.ok(damaged.includes('never force push'));
   assert.ok(damaged.includes('more prose'));
+});
+
+test('REGRESSION a rule file documenting the markers in prose keeps its contract', () => {
+  // Found while regenerating this repository: AGENTS.md explains the contract with the markers
+  // inline ("never hand-edit the block between `<!-- engram:contract:start -->` and
+  // `<!-- engram:contract:end -->`"). Treating those inline mentions as structural made the file
+  // look unbalanced, so withContract refused to write and the real contract block was deleted.
+  const documented = [
+    '# engram — agent instructions',
+    '',
+    '- The contract block between `<!-- engram:contract:start -->` and',
+    '  `<!-- engram:contract:end -->` is machine-owned. Never hand-edit it.',
+    '',
+    '_Read by: pi, codex._',
+    '',
+    '<!-- engram:managed -->',
+    '',
+  ].join('\n');
+
+  assert.equal(inspectMarkers(documented).health, 'absent', 'prose mentions are not markers');
+  const rendered = renderRuleFile(AGENTS_RULE, { projectName: 'demo', alsoReadBy: ['pi'] }, documented);
+  assert.equal(rendered.health, 'ok', 'prose must not block the contract');
+  assert.ok(rendered.content.includes(AI_CONTRACT), 'the contract must actually be written');
+  assert.ok(rendered.content.includes('Never hand-edit it'), 'the human prose survives');
+  assert.equal(inspectMarkers(rendered.content).health, 'balanced');
+
+  // And it must survive a re-render unchanged.
+  assert.equal(renderRuleFile(AGENTS_RULE, { projectName: 'demo', alsoReadBy: ['pi'] }, rendered.content).content, rendered.content);
 });
 
 test('markers inside a fenced code block are documentation, not the contract', () => {
@@ -157,9 +193,9 @@ test('refreshContract is a no-op on a fresh file and repairs a damaged one', () 
   const rendered = renderRuleFile(AGENTS_RULE, CTX).content;
   assert.equal(refreshContract(rendered, AGENTS_RULE).content, rendered);
 
-  const damaged = rendered.replace(AI_CONTRACT, 'truncated...');
-  const repaired = refreshContract(damaged, AGENTS_RULE);
+  const repaired = refreshContract(staleContract(rendered), AGENTS_RULE);
   assert.ok(repaired.content.includes(AI_CONTRACT));
+  assert.ok(!repaired.content.includes('a stale contract body'));
   assert.equal(refreshContract(repaired.content, AGENTS_RULE).content, repaired.content);
 });
 
@@ -171,7 +207,7 @@ test('refreshContract appends the contract to a file that never had one', () => 
 });
 
 test('the managed marker survives a damaged contract repair', () => {
-  const rendered = renderRuleFile(AGENTS_RULE, CTX).content.replace(AI_CONTRACT, 'broken');
+  const rendered = staleContract(renderRuleFile(AGENTS_RULE, CTX).content);
   const repaired = refreshContract(rendered, AGENTS_RULE);
   assert.equal(repaired.content.split(MANAGED_MARKER).length - 1, 1);
   assert.ok(repaired.content.includes(AI_CONTRACT));
@@ -208,6 +244,46 @@ test('re-rendering a frontmatter file never duplicates its frontmatter', () => {
   assert.equal(second, first);
   assert.equal(second.split('alwaysApply: true').length - 1, 1);
   assert.ok(second.startsWith('---\n'));
+});
+
+test('REGRESSION a rule file kind with no frontmatter does not accumulate duplicates', () => {
+  // `.github/copilot-instructions.md` is kind `copilot` but has no frontmatter, so its merge
+  // path produced an empty default. Returning the whole file there spliced a second copy of the
+  // body on every render: the managed marker went 1 -> 3 across a few `init` runs.
+  const rule = { path: '.github/copilot-instructions.md', kind: 'copilot' as const, note: 't' };
+  const first = renderRuleFile(rule, CTX).content;
+  const second = renderRuleFile(rule, CTX, first).content;
+  const third = renderRuleFile(rule, CTX, second).content;
+  assert.equal(second, first);
+  assert.equal(third, second);
+  assert.equal(second.split(MANAGED_MARKER).length - 1, 1);
+  assert.equal(second.split(CONTRACT_START).length - 1, 1);
+  assert.ok(second.split('\n# engram — agent instructions\n').length - 1 <= 1, 'body must not duplicate');
+  assert.ok(!second.startsWith('---\n'), 'no frontmatter is invented for this file');
+});
+
+test('every rule kind is stable across three render passes', () => {
+  // A blunt net for the whole bug class: whatever the file kind, re-rendering is a no-op.
+  const kinds = [
+    { path: 'AGENTS.md', kind: 'agents' as const, note: 't' },
+    { path: 'CLAUDE.md', kind: 'claude' as const, note: 't' },
+    { path: 'GEMINI.md', kind: 'gemini' as const, note: 't' },
+    { path: '.cursor/rules/x.mdc', kind: 'cursor' as const, note: 't' },
+    { path: '.windsurf/rules/x.md', kind: 'windsurf' as const, note: 't' },
+    { path: '.github/copilot-instructions.md', kind: 'copilot' as const, note: 't' },
+    { path: '.github/instructions/x.instructions.md', kind: 'copilot' as const, note: 't' },
+  ];
+  for (const kind of kinds) {
+    const ctx = { projectName: 'demo', alsoReadBy: ['pi'] };
+    const a = renderRuleFile(kind, ctx).content;
+    const b = renderRuleFile(kind, ctx, a).content;
+    const c = renderRuleFile(kind, ctx, b).content;
+    assert.equal(b, a, `${kind.path} is not stable after one re-render`);
+    assert.equal(c, a, `${kind.path} is not stable after two re-renders`);
+    assert.equal(a.split(MANAGED_MARKER).length - 1, 1, `${kind.path} marker count`);
+    assert.equal(a.split(CONTRACT_START).length - 1, 1, `${kind.path} contract count`);
+    assert.ok(a.trim().length > 0);
+  }
 });
 
 test('shared-reader notes appear once no matter how often init runs', () => {

@@ -8,7 +8,7 @@ argument-hint: '[topic] — short slug for the session, e.g. "auth-refresh"'
 Compress everything that matters about this session into the memory bank so the next
 session starts warm. Never dump a transcript; reconstruct state.
 
-$ARGUMENTS: `$ARGUMENTS` is the optional topic slug. If absent, derive one from the dominant task.
+ARGUMENTS: `$ARGUMENTS` is the optional topic slug. If absent, derive one from the dominant task.
 
 ## Procedure
 

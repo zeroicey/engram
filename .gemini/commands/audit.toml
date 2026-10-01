@@ -5,7 +5,7 @@ prompt = """
 Find where the bank and the code have drifted, and report it as a short, ranked list of
 concrete fixes. An audit that only says "docs look fine" is a failed audit.
 
-{{args}}: `{{args}}` optionally narrows the audit to a path or subsystem.
+ARGUMENTS: `{{args}}` optionally narrows the audit to a path or subsystem.
 
 ## Procedure
 

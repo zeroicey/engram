@@ -2,6 +2,9 @@
 
 **Status:** 💭 PROPOSAL · **Date:** YYYY-MM-DD · **Deciders:** <who> · **Supersedes:** <file or none>
 
+<!-- Status machine: 💭 PROPOSAL → ✅ ACCEPTED → 🪦 REJECTED.
+     Flip the word in the Status line above; never delete the file and never rewrite the reasoning. -->
+
 ## Context
 
 <!-- The forcing function. Facts and constraints only — no preference yet. -->
