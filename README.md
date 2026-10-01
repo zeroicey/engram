@@ -17,9 +17,9 @@ read and write — plus a ≤1.5 KB fingerprint so a new session starts warm ins
 `engram dump` 输出 ≤1.5KB 的动态指纹，新会话一句话接盘。
 
 ```bash
-npx engram init --tools agents,claude,cursor,pi   # 生成骨架 + 规则文件 + 元提示词
+npx @zeroicey/engram init --tools agents,claude,cursor,pi   # 生成骨架 + 规则文件 + 元提示词
 npx engram dump                                   # ≤1.5KB 指纹，贴到新会话第一句
-npx engram sync                                   # 规则文件改动后刷新契约与技能载体
+npx @zeroicey/engram sync                         # 规则文件改动后刷新契约与技能载体
 ```
 
 四个层：L0 动态注入（dump）· L1 行为契约（规则文件）· L2 知识库（`.ai/`）· L3 动作技能
@@ -32,12 +32,12 @@ npx engram sync                                   # 规则文件改动后刷新�
 Requires Node ≥ 20. Zero runtime dependencies.
 
 ```bash
-npx engram init          # or: npx engram init --tools claude,cursor,pi --notes "our norms"
-npx engram dump          # ≤1.5 KB fingerprint
-npx engram dump --json   # same, machine-readable
+npx @zeroicey/engram init    # or: add --tools claude,cursor,pi --notes "our norms"
+npx @zeroicey/engram dump    # ≤1.5 KB fingerprint
+npx @zeroicey/engram dump --json
 ```
 
-Or pin it: `npm i -D engram` then `npx engram …` / `engram …`.
+Or pin it: `npm i -D @zeroicey/engram` then `npx engram …`.
 
 ## The four layers
 

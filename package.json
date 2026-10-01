@@ -1,7 +1,7 @@
 {
-  "name": "engram",
-  "version": "0.1.0",
-  "description": "Portable project memory + scaffold for AI coding tools (.ai/ memory bank, cross-tool AGENTS.md/CLAUDE.md/.cursorrules contracts, ≤1.5KB context fingerprint).",
+  "name": "@zeroicey/engram",
+  "version": "0.2.0",
+  "description": "Portable project memory + scaffold for AI coding tools (.ai/ memory bank, cross-tool AGENTS.md/CLAUDE.md/.cursorrules contracts, \u22641.5KB context fingerprint).",
   "keywords": [
     "ai",
     "agent",
@@ -43,5 +43,13 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.7.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zeroicey/engram.git"
+  },
+  "homepage": "https://github.com/zeroicey/engram#readme",
+  "bugs": {
+    "url": "https://github.com/zeroicey/engram/issues"
   }
 }
