@@ -1,0 +1,15 @@
+export { TOOLS, DEFAULT_TOOL_IDS, allToolIds, getTool, ruleFilesFor } from './adapters/index.js';
+export type { RuleFileDef, SkillSink, ToolDef } from './adapters/index.js';
+export { runInit, runSync, aiSkeleton, materializeSkillSinks } from './commands/init.js';
+export { runDump, renderDump } from './commands/dump.js';
+export { runNew, renderNewFile, isMemoryKind } from './commands/new.js';
+export type { MemoryKind } from './commands/new.js';
+export { loadMemory, parseCurrentTask } from './core/memory.js';
+export { buildFingerprint } from './core/fingerprint.js';
+export type { Fingerprint, FingerprintOptions } from './core/fingerprint.js';
+export { detectProject } from './core/project.js';
+export type { ProjectFacts } from './core/project.js';
+export { buildBootstrapPrompt } from './templates/meta-prompt.js';
+export { AI_CONTRACT, withContract, withoutContract } from './templates/contract.js';
+export { SKILL_SPECS, SKILL_NAMES, skillFile } from './templates/skills.js';
+export type { SkillSpec } from './templates/skills.js';

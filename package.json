@@ -1,0 +1,45 @@
+{
+  "name": "engram",
+  "version": "0.1.0",
+  "description": "Portable project memory + scaffold for AI coding tools (.ai/ memory bank, cross-tool AGENTS.md/CLAUDE.md/.cursorrules contracts, ≤1.5KB context fingerprint).",
+  "keywords": [
+    "ai",
+    "agent",
+    "memory",
+    "context",
+    "agents-md",
+    "claude",
+    "cursor",
+    "codex",
+    "pi",
+    "windsurf",
+    "scaffold"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "engram": "build/src/cli.js"
+  },
+  "exports": {
+    ".": "./build/src/index.js"
+  },
+  "files": [
+    "build/src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test build/test/*.test.js",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}
