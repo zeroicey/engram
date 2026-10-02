@@ -13,6 +13,16 @@ a release is a trust event: verify the tarball contents before pushing it.
 - `package.json` `name`, `version`, `repository` correct
 - clean working tree on `main`
 
+## Two-factor note
+
+The account has 2FA enforced for publishing, so `npm publish` fails with a bare E403. An
+`--otp=<code>` flag does **not** work when a human relays the code to an agent: the TOTP window is
+about 30 seconds and a round-trip through a tool call loses it. The npm login token on the machine
+is an OAuth token, which is why the server still reports "2FA required".
+
+So: **the human runs the final `npm publish` themselves**, or the repo gets a granular access token
+with *bypass 2FA* and the automation stops asking for codes.
+
 ## Procedure
 
 ```bash

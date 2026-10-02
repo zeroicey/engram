@@ -29,7 +29,7 @@ regression tests; what remains is publishing.
 - [x] Adapter facts re-verified against vendor docs; Copilot args, Windsurf/Devin, Codex invocation
 - [x] CRLF, 4-backtick fences, unterminated frontmatter, HTML-comment markers: all covered
 - [x] Layering enforced by tests instead of prose
-- [ ] Publish to npm (needs `npm login`) and push to `zeroicey/engram`
+- [x] Published `@zeroicey/engram@0.2.0`; repo + tag live at `github.com/zeroicey/engram`
 
 ## Code state
 
@@ -53,4 +53,11 @@ artifact is what gets tested). `engram dump` currently renders 1085 bytes.
 
 ## Next action
 
-`npm login`, then `npm publish --access public` and push the tagged repo per `README.md` § Release.
+Use it on a real project that is not this one, and watch what the bank actually gets asked for.
+The first thing to instrument is whether anyone pastes the L0 fingerprint at all: that layer is
+still manual, and it is the layer the product is named after.
+
+Candidate v0.3 work, in order of leverage:
+1. `/verify` — run the project's gate and record the result (four write verbs, zero read verbs).
+2. `/start` — reconcile `CURRENT_TASK.md` against `git status`/HEAD and flag stale pointers.
+3. `engram doctor` — machine-checkable bank drift: dangling `.ai/` paths, generated-file drift.
