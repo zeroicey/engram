@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { yamlScalar } from '../core/yaml.js';
 import type { SkillSpec } from '../templates/skills.js';
 import type { SkillSink } from './index.js';
 import { generatedHeader } from './rules.js';
@@ -13,7 +14,7 @@ const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
 /** Frontmatter + body of a canonical skill, used verbatim for Agent Skills dirs. */
 function agentSkillFile(spec: SkillSpec, sourcePath: string): string {
-  const header = ['---', `name: ${spec.name}`, `description: ${oneLine(spec.description)}`, '---'].join('\n');
+  const header = ['---', `name: ${spec.name}`, `description: ${yamlScalar(spec.description)}`, '---'].join('\n');
   return `${header}\n\n${generatedHeader(sourcePath)}\n\n${spec.body.trim()}\n`;
 }
 
@@ -24,11 +25,11 @@ function promptTemplate(spec: SkillSpec, sourcePath: string, frontmatter: 'slash
   const body = substituteArgs(spec.body, frontmatter === 'copilot' ? '${input:arguments}' : '$ARGUMENTS');
   const fm =
     frontmatter === 'copilot'
-      ? ['---', 'agent: agent', `description: ${oneLine(spec.description)}`, '---'].join('\n')
+      ? ['---', 'agent: agent', `description: ${yamlScalar(spec.description)}`, '---'].join('\n')
       : [
           '---',
-          `description: ${oneLine(spec.description)}`,
-          `argument-hint: ${yamlString(spec.argumentHint)}`,
+          `description: ${yamlScalar(spec.description)}`,
+          `argument-hint: ${yamlScalar(spec.argumentHint)}`,
           '---',
         ].join('\n');
   return `${fm}\n\n${generatedHeader(sourcePath)}\n\n${body}\n`;
@@ -43,11 +44,6 @@ function promptTemplate(spec: SkillSpec, sourcePath: string, frontmatter: 'slash
  */
 export const substituteArgs = (body: string, token: string): string =>
   body.replaceAll('<ARGUMENTS>', token);
-
-/** YAML single-quoted scalar; `'` is escaped by doubling, as the YAML spec requires. */
-function yamlString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
-}
 
 function tomlEscape(body: string): string {
   return body.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');

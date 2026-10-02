@@ -6,6 +6,8 @@
  * The body must stay tool-neutral: no tool-specific syntax except a plain `ARGUMENTS` line.
  */
 
+import { yamlScalar } from '../core/yaml.js';
+
 export interface SkillSpec {
   name: string;
   description: string;
@@ -15,7 +17,7 @@ export interface SkillSpec {
 }
 
 const frontmatter = (s: SkillSpec): string =>
-  ['---', `name: ${s.name}`, `description: ${s.description}`, '---'].join('\n');
+  ['---', `name: ${s.name}`, `description: ${yamlScalar(s.description)}`, '---'].join('\n');
 
 export const SKILL_SPECS: SkillSpec[] = [
   {

@@ -1,5 +1,5 @@
 ---
-description: Compress the current session into .ai/sessions/YYYY-MM-DD-<topic>-handoff.md and refresh .ai/CURRENT_TASK.md so a fresh session resumes without re-deriving context. Use when ending a session, after a long debugging detour, after context compaction, or when the user says "wrap up", "handoff", "new session".
+description: 'Compress the current session into .ai/sessions/YYYY-MM-DD-<topic>-handoff.md and refresh .ai/CURRENT_TASK.md so a fresh session resumes without re-deriving context. Use when ending a session, after a long debugging detour, after context compaction, or when the user says "wrap up", "handoff", "new session".'
 argument-hint: '[topic] — short slug for the session, e.g. "auth-refresh"'
 ---
 

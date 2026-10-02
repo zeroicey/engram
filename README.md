@@ -143,7 +143,7 @@ documents itself with engram.
 ```bash
 npm test && npm pack --dry-run
 npm publish --access public
-git tag -a v0.2.0 -m "engram 0.2.0" && git push origin main --follow-tags
+git tag -a v0.2.1 -m "engram 0.2.0" && git push origin main --follow-tags
 ```
 
 Full procedure: `.ai/runbooks/release.md`. Setup: `.ai/runbooks/dev-setup.md`.

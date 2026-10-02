@@ -30,6 +30,8 @@ regression tests; what remains is publishing.
 - [x] CRLF, 4-backtick fences, unterminated frontmatter, HTML-comment markers: all covered
 - [x] Layering enforced by tests instead of prose
 - [x] Published `@zeroicey/engram@0.2.0`; repo + tag live at `github.com/zeroicey/engram`
+- [x] v0.2.1 fixes unquoted YAML frontmatter that made 2 of 4 skills unloadable everywhere
+- [ ] Publish `@zeroicey/engram@0.2.1` (the human runs the final `npm publish`: 2FA)
 
 ## Code state
 

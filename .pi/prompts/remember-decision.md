@@ -1,5 +1,5 @@
 ---
-description: Capture a proposal or an accepted decision in .ai/decisions/YYYY-MM-DD-<topic>.md with the 💭 PROPOSAL → ✅ ACCEPTED → 🪦 REJECTED status machine, options and consequences. Use when a choice is expensive to reverse, when the user asks for a plan/RFC/ADR, or when brainstorming a direction before implementation.
+description: 'Capture a proposal or an accepted decision in .ai/decisions/YYYY-MM-DD-<topic>.md with the 💭 PROPOSAL → ✅ ACCEPTED → 🪦 REJECTED status machine, options and consequences. Use when a choice is expensive to reverse, when the user asks for a plan/RFC/ADR, or when brainstorming a direction before implementation.'
 argument-hint: '<topic> — short kebab-case topic for the decision'
 ---
 

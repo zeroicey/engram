@@ -27,7 +27,10 @@ async function run(args: string[]): Promise<{ code: number; out: string }> {
 
 test('package declares zero runtime dependencies', () => {
   assert.equal(pkg.dependencies, undefined, 'a scaffolder must not ship runtime dependencies');
-  assert.deepEqual(Object.keys(pkg.devDependencies ?? {}).sort(), ['@types/node', 'typescript']);
+  // js-yaml is a deliberate devDependency: the frontmatter bug in 0.2.0 shipped because a regex
+  // test could not tell valid YAML from invalid. Parsing for real is the only assertion that
+  // catches it. It never reaches a consumer: `files` ships build/src only.
+  assert.deepEqual(Object.keys(pkg.devDependencies ?? {}).sort(), ['@types/node', 'js-yaml', 'typescript']);
 });
 
 test('--help and --version work without arguments', async () => {

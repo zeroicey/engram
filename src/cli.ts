@@ -10,7 +10,7 @@ import { SKILL_NAMES } from './templates/skills.js';
 import { toolSummary } from './templates/meta-prompt.js';
 import { writeFile } from './core/project.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 
 /**
  * `engram dump | head -1` is the canonical way to preview the fingerprint. When the reader exits

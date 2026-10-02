@@ -29,7 +29,7 @@ with *bypass 2FA* and the automation stops asking for codes.
 npm test                                  # build + full suite must be green
 npm pack --dry-run                        # inspect the tarball file list
 npm publish --access public                # first release only; npm login first
-git tag -a v0.2.0 -m "engram 0.1.0"
+git tag -a v0.2.1 -m "engram 0.1.0"
 git push origin main --follow-tags
 ```
 
@@ -49,7 +49,7 @@ npx engram@latest init --tools agents --dry-run   # in a scratch directory
 
 ```bash
 npm unpublish engram@0.1.0     # only within 72h of publishing
-git push origin :refs/tags/v0.2.0
+git push origin :refs/tags/v0.2.1
 ```
 
 After 72 hours the version is permanent: publish `0.1.1` and mark `0.1.0` as deprecated on npm.

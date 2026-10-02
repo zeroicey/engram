@@ -1,5 +1,5 @@
 ---
-description: Record a decoded failure mode as .ai/pitfalls/cases/<case>.md: symptom, root cause, fix and a guard that makes it unrepeatable. Use when hitting a confusing bug, a silent wrong-result, a flaky test, an environment-only trap, or when the user says "remember this", "don't repeat that", "note this pitfall".
+description: 'Record a decoded failure mode as .ai/pitfalls/cases/<case>.md: symptom, root cause, fix and a guard that makes it unrepeatable. Use when hitting a confusing bug, a silent wrong-result, a flaky test, an environment-only trap, or when the user says "remember this", "don''t repeat that", "note this pitfall".'
 argument-hint: '<case> — short kebab-case name of the failure mode'
 ---
 

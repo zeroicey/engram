@@ -1,5 +1,5 @@
 ---
-description: Check consistency between the code and the memory bank: architecture drift, decisions that were silently violated, stale runbooks, pitfalls without guards, handoffs that contradict CURRENT_TASK. Use before a release, before a large refactor, after returning from a long absence, or when the user says "audit", "is the doc still true", "drift check".
+description: 'Check consistency between the code and the memory bank: architecture drift, decisions that were silently violated, stale runbooks, pitfalls without guards, handoffs that contradict CURRENT_TASK. Use before a release, before a large refactor, after returning from a long absence, or when the user says "audit", "is the doc still true", "drift check".'
 argument-hint: '[scope] — optional path or subsystem to focus on'
 ---
 
