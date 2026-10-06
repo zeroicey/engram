@@ -1,6 +1,6 @@
 # Current task
 
-**Status:** 🟢 v0.1 complete, awaiting publish identity · **Updated:** 2026-10-01
+**Status:** 🟡 v0.3.0 in progress · **Updated:** 2026-10-06
 
 ## Goal
 
@@ -32,12 +32,18 @@ regression tests; what remains is publishing.
 - [x] Published `@zeroicey/engram@0.2.0`; repo + tag live at `github.com/zeroicey/engram`
 - [x] v0.2.1 fixes unquoted YAML frontmatter that made 2 of 4 skills unloadable everywhere
 - [ ] Publish `@zeroicey/engram@0.2.1` (the human runs the final `npm publish`: 2FA)
+- [x] v0.3.0: Pi skill-collision fix — one carrier dir (`.agents/skills`), `.pi/skills` retired
+- [x] v0.3.0: `init` records the tool set in `.engram/config.json`; `sync` inherits it (`--all` overrides)
+- [x] v0.3.0: `sync` prunes carriers in retired dirs only, and only files carrying the generated marker
+- [x] Ran `engram sync` in `skybrain` and `skyeye` — `.pi/skills` pruned, tool sets recorded
+- [ ] `research` deliberately left untouched (user request) — run `engram sync` there when wanted
+- [ ] Publish `@zeroicey/engram@0.3.0`
 
 ## Code state
 
-Branch `main`, single commit. `src/` is 11 TypeScript modules, `test/` 5 suites, zero runtime deps.
+Branch `main`, single commit. `src/` is 13 TypeScript modules, `test/` 7 suites, zero runtime deps.
 Build: `npm run build` → `build/`; tests run against compiled output on purpose (the shipped
-artifact is what gets tested). `engram dump` currently renders 1085 bytes.
+artifact is what gets tested). `engram dump` currently renders 1414 bytes.
 
 ## Blockers
 
@@ -52,12 +58,12 @@ artifact is what gets tested). `engram dump` currently renders 1085 bytes.
 - `.ai/pitfalls/cases/await-member-parens.md` — `(await x).y` vs `await x.y`; lint here is right.
 - `.ai/pitfalls/cases/fingerprint-table-noise.md` — regex parsing swallows Markdown tables.
 - `.ai/pitfalls/cases/contract-marker-matched-in-prose.md` — markers count only on their own line.
+- `.ai/pitfalls/cases/agent-scans-two-skill-dirs.md` — one agent can read two carrier dirs; check
+  the new sink against that agent's docs before adding it.
 
 ## Next action
 
-Use it on a real project that is not this one, and watch what the bank actually gets asked for.
-The first thing to instrument is whether anyone pastes the L0 fingerprint at all: that layer is
-still manual, and it is the layer the product is named after.
+Next action: run `engram sync` in `skybrain`, `research` and `skyeye` (v0.3.0 build), then publish.
 
 Candidate v0.3 work, in order of leverage:
 1. `/verify` — run the project's gate and record the result (four write verbs, zero read verbs).

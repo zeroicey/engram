@@ -46,13 +46,15 @@ Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templ
 - No runtime dependency, ever — see `.ai/decisions/2026-10-01-zero-runtime-dependencies.md`.
 - The contract block between `<!-- engram:contract:start -->` and `<!-- engram:contract:end -->` is
   machine-owned. Never hand-edit it; `engram sync` overwrites it.
-- Canonical skills live once in `.ai/skills/*.md`. Tool carriers under `.claude/`, `.pi/`, `.cursor/`,
+- Canonical skills live once in `.ai/skills/*.md`. Tool carriers under `.agents/`, `.claude/`, `.cursor/`,
   `.gemini/`, `.github/prompts/` are generated — edit the canonical file and run `engram sync`.
+  Pi reads `.agents/skills/`; do not add a `.pi/skills/` copy (same skill name, two scanned
+  dirs, collision warning at every startup).
 - `tsconfig.json` `include` covers `src/` and `test/`; output lands in `build/{src,test}`.
 
 ## Definition of done
 
-1. `npm test` passes (95 tests today, `node --test` on compiled output).
+1. `npm test` passes (106 tests today, `node --test` on compiled output).
 2. `npm run typecheck` is clean.
 3. `node build/src/cli.js dump` stays inside its byte budget.
 4. Behaviour that the memory bank records — an invariant, a decision, a pitfall — is written back

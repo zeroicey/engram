@@ -77,13 +77,13 @@ Flags: `--tools a,b,c`, `--all`, `--notes "team norms"`, `--force`, `--dry-run`,
 | id | Rule file | Skill carriers |
 | --- | --- | --- |
 | `agents` | `AGENTS.md` (Codex, OpenCode, Cline, Amp, Zed…) | `.agents/skills/` |
-| `codex` | `AGENTS.md` | — (user-level `~/.codex/prompts`) |
+| `codex` | `AGENTS.md` | `.agents/skills/` (shared with `agents`) |
 | `claude` | `CLAUDE.md` | `.claude/skills/`, `.claude/commands/` |
 | `cursor` | `.cursor/rules/engram-memory.mdc` | `.cursor/skills/` |
 | `windsurf` | `.windsurf/rules/engram-memory.md` | — |
 | `copilot` | `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md` | `.github/prompts/` |
 | `gemini` | `GEMINI.md` | `.gemini/commands/*.toml` |
-| `pi` | `AGENTS.md` | `.pi/skills/`, `.pi/prompts/` |
+| `pi` | `AGENTS.md` | `.agents/skills/` (shared), `.pi/prompts/` |
 
 ## The two design problems, solved
 

@@ -10,7 +10,7 @@ import { SKILL_NAMES } from './templates/skills.js';
 import { toolSummary } from './templates/meta-prompt.js';
 import { writeFile } from './core/project.js';
 
-const VERSION = '0.2.1';
+const VERSION = '0.3.0';
 
 /**
  * `engram dump | head -1` is the canonical way to preview the fingerprint. When the reader exits
@@ -110,7 +110,8 @@ DUMP OPTIONS
   --out <file>       write the fingerprint to a file, in the requested format
 
 SYNC OPTIONS
-  --tools <a,b,c>    limit to specific tools (default: all)
+  --tools <a,b,c>    limit to specific tools (default: the set recorded by \`engram init\`)
+  --all              sync every supported tool, ignoring the recorded set
 
 SUPPORTED TOOLS
 ${TOOLS.map((t) => `  ${t.id.padEnd(9)} ${t.label}`).join('\n')}
@@ -200,9 +201,10 @@ async function cmdNew(root: string, args: Args): Promise<number> {
 async function cmdSync(root: string, args: Args): Promise<number> {
   const list = str(args.flags, 'tools');
   const toolIds = list ? list.split(',').map((s) => s.trim()).filter(Boolean) : [];
-  const res = await runSync(root, toolIds, flag(args.flags, 'dry-run'));
+  const res = await runSync(root, toolIds, flag(args.flags, 'dry-run'), flag(args.flags, 'all'));
   for (const f of res.ruleFiles) console.log(`${f.action.padEnd(9)} ${f.path}`);
-  console.log(`${res.skills.length} skill files materialised`);
+  console.log(`${res.skills.length} skill files materialised (${res.scope === 'config' ? 'recorded tool set' : res.scope})`);
+  for (const p of res.pruned) console.log(`pruned     ${p}`);
   for (const m of res.missingSkills) console.error(`warn: missing canonical skill .ai/skills/${m}.md`);
   for (const w of res.warnings) console.error(`warn: ${w}`);
   // `sync` on an un-initialised repo must not look like success.

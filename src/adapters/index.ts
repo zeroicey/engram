@@ -234,10 +234,14 @@ export const TOOLS: ToolDef[] = [
       },
     ],
     skillSinks: [
-      { kind: 'agent-skills', dir: '.pi/skills', note: 'Agent Skills spec; invoke with /skill:<name>.' },
+      // No `.pi/skills` sink on purpose. Pi scans `.pi/skills` **and** `.agents/skills`
+      // (pi docs, "Add it to Pi"), so shipping the same skill name into both made every Pi
+      // session print "name collision" for all four skills and silently keep whichever dir was
+      // scanned first. `.agents/skills` is the Agent Skills standard dir Pi already reads.
       { kind: 'prompt-md-args', dir: '.pi/prompts', note: 'Prompt templates become /<name> slash commands.' },
     ],
     notes: [
+      'Skills load from the shared `.agents/skills/` (Agent Skills spec) — Pi reads it natively, so engram never duplicates them into `.pi/skills/`, where the second copy collides.',
       'Project resources require trust; run `/reload` after adding skills or prompts in a live session.',
       'Skills are advertised by name+description and loaded on demand — keep descriptions routing-precise.',
     ],
@@ -245,7 +249,8 @@ export const TOOLS: ToolDef[] = [
   discovered on demand downwards, unlike Codex); subdirectory files apply only when Pi runs there.
 - Skills: frontmatter \`name\` + \`description\` (max 1024 chars) decides when the model loads them — say what it does *and* when it applies.
 - Prefer bundled references over long instructions; Pi loads SKILL.md only when routed to.
-- Project trust gates \`.pi/skills\` and \`.pi/prompts\`; mention this to humans, not to the model.`,
+- Skills live in the shared \`.agents/skills/\` dir; Pi reads that alongside \`.pi/skills/\`, so never add a second copy of the same skill name under \`.pi/skills/\`.
+- Project trust gates project resources (\`.agents/skills/\`, \`.pi/prompts/\`); mention this to humans, not to the model.`,
   },
 ];
 
@@ -276,3 +281,18 @@ export function ruleFilesFor(toolIds: string[]): Array<{ toolId: string; def: Ru
 export function toolsSharingRuleFile(toolIds: string[], rulePath: string): string[] {
   return toolIds.filter((id) => getTool(id)?.ruleFiles.some((f) => f.path === rulePath));
 }
+
+/** Every skill/command carrier directory any tool can claim, de-duplicated, stable order. */
+export function allSinkDirs(): string[] {
+  return [...new Set(TOOLS.flatMap((t) => t.skillSinks.map((s) => s.dir)))];
+}
+
+/**
+ * Carrier directories no tool claims any more, kept so `sync` can clean up after itself.
+ *
+ * `.pi/skills` is here because Pi reads `.agents/skills` natively: materialising both made every
+ * Pi startup warn about four colliding skill names. Pruning is deliberately limited to *retired*
+ * dirs rather than "any dir the current flags did not select", so `sync --tools agents` narrows
+ * what it writes instead of deleting a user's working Claude/Codex carriers.
+ */
+export const RETIRED_SINK_DIRS: readonly string[] = ['.pi/skills'];

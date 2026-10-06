@@ -13,8 +13,10 @@ import {
 } from '../templates/ai-files.js';
 import { SKILL_SPECS, skillFile } from '../templates/skills.js';
 import { buildBootstrapPrompt, toolSummary } from '../templates/meta-prompt.js';
-import { TOOLS, getTool, ruleFilesFor, type ToolDef } from '../adapters/index.js';
+import { getTool, ruleFilesFor, allToolIds, type ToolDef } from '../adapters/index.js';
 import { commandNameFor, materialize } from '../adapters/skills.js';
+import { pruneStaleCarriers } from './prune-carriers.js';
+import { CONFIG_PATH, inferToolsFromDisk, knownTools, readConfig, writeConfig } from '../core/config.js';
 import { renderRuleFile, refreshContract } from '../adapters/rules.js';
 import { detectProject, readFileSafe, todayISO, writeIfMissing, writeFile } from '../core/project.js';
 import type { MemoryBank } from '../core/memory.js';
@@ -144,6 +146,15 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const bootstrapPath = '.engram/BOOTSTRAP.md';
   files.push({ path: bootstrapPath, action: await writeGenerated(opts.root, bootstrapPath, bootstrap, dryRun) });
 
+  // The tool set is a user decision; `sync` must inherit it instead of re-deciding "all tools".
+  // Written through `writeGenerated` alone: a second `writeConfig` call would turn the very
+  // first init into a `kept` action and make "everything is created" untrue.
+  const toolIds = tools.map((t) => t.id);
+  if (toolIds.length > 0) {
+    const content = `${JSON.stringify({ version: 1, tools: toolIds }, null, 2)}\n`;
+    files.push({ path: CONFIG_PATH, action: await writeGenerated(opts.root, CONFIG_PATH, content, dryRun) });
+  }
+
   if (facts.existingRuleFiles.length && !opts.force) {
     warnings.push(
       `Existing rule file(s) preserved, contract appended only: ${facts.existingRuleFiles.join(', ')}`,
@@ -184,11 +195,39 @@ export interface SyncResult {
   skills: string[];
   missingSkills: string[];
   warnings: string[];
+  /** Generated carriers removed because the recorded tool set no longer claims their dir. */
+  pruned: string[];
+  /** Where the tool scope came from: config, disk inference, or an explicit flag. */
+  scope: 'config' | 'inferred' | 'flags' | 'all-tools';
   /** True when the repository has never been initialised. */
   needsInit: boolean;
 }
 
-export async function runSync(root: string, toolIds: string[], dryRun = false): Promise<SyncResult> {
+/**
+ * Which tools this sync is allowed to write.
+ *
+ * Precedence: explicit `--tools`, then `--all`, then the set recorded by `init`, then what the
+ * disk already looks like. Only when nothing at all is on disk does it fall back to every tool —
+ * and that fallback is what used to run unconditionally, silently generating carriers for eight
+ * agents in a repo that asked for one.
+ */
+export async function resolveSyncTools(
+  root: string,
+  explicit: string[],
+  dryRun = false,
+): Promise<{ toolIds: string[]; scope: SyncResult['scope'] }> {
+  if (explicit.length > 0) return { toolIds: knownTools(explicit), scope: 'flags' };
+  const config = await readConfig(root);
+  if (config) return { toolIds: config.tools, scope: 'config' };
+  const inferred = await inferToolsFromDisk(root);
+  if (inferred.length > 0) {
+    if (!dryRun) await writeConfig(root, inferred);
+    return { toolIds: inferred, scope: 'inferred' };
+  }
+  return { toolIds: allToolIds(), scope: 'all-tools' };
+}
+
+export async function runSync(root: string, toolIds: string[] = [], dryRun = false, all = false): Promise<SyncResult> {
   const warnings: string[] = [];
   const unknown = toolIds.filter((id) => !getTool(id));
   for (const id of unknown) warnings.push(`Unknown tool "${id}" — ignored.`);
@@ -197,14 +236,22 @@ export async function runSync(root: string, toolIds: string[], dryRun = false): 
       ruleFiles: [],
       skills: [],
       missingSkills: [],
+      pruned: [],
       warnings,
+      scope: 'flags',
       needsInit: true,
     };
   }
 
   const bank = await loadMemory(root);
   const needsInit = !bank.exists;
-  const tools = (toolIds.length ? toolIds.map(getTool) : TOOLS).filter((t): t is ToolDef => Boolean(t));
+  const resolved = all
+    ? { toolIds: allToolIds(), scope: 'all-tools' as const }
+    : await resolveSyncTools(root, toolIds, dryRun);
+  if (toolIds.length === 0 && resolved.toolIds.length === 0) {
+    warnings.push('No valid tools recorded — pass --tools or run `engram init` again.');
+  }
+  const tools = resolved.toolIds.map(getTool).filter((t): t is ToolDef => Boolean(t));
   const ruleFiles: SyncResult['ruleFiles'] = [];
 
   for (const { def } of ruleFilesFor(tools.map((t) => t.id))) {
@@ -226,9 +273,13 @@ export async function runSync(root: string, toolIds: string[], dryRun = false): 
   }
 
   const written = await materializeSkillSinks(root, bank, tools, dryRun);
+  const pruned = (await pruneStaleCarriers(root, tools, dryRun)).removed;
   const missing = SKILL_SPECS.filter((s) => !bank.skills.includes(`${s.name}.md`)).map((s) => s.name);
   if (needsInit) warnings.push('No .ai/ memory bank here — run `engram init` first.');
-  return { ruleFiles, skills: written, missingSkills: missing, warnings, needsInit };
+  if (resolved.scope === 'inferred') {
+    warnings.push(`No ${CONFIG_PATH} yet — recorded the tool set found on disk: ${resolved.toolIds.join(', ')}.`);
+  }
+  return { ruleFiles, skills: written, missingSkills: missing, pruned, warnings, scope: resolved.scope, needsInit };
 }
 
 export { commandNameFor, toolSummary };

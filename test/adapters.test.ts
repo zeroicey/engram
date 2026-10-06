@@ -27,11 +27,11 @@ test('unknown tool ids resolve to undefined rather than throwing', () => {
 });
 
 test('skill carriers rewrite the ARGUMENTS token per tool', () => {
-  const agentSkills = materialize({ kind: 'agent-skills', dir: '.pi/skills' }, SKILL_SPECS);
+  const agentSkills = materialize({ kind: 'agent-skills', dir: '.agents/skills' }, SKILL_SPECS);
   const slash = materialize({ kind: 'prompt-md-args', dir: '.claude/commands' }, SKILL_SPECS);
   const gemini = materialize({ kind: 'prompt-toml', dir: '.gemini/commands' }, SKILL_SPECS);
 
-  const skill = agentSkills.find((f) => f.path === '.pi/skills/handoff/SKILL.md');
+  const skill = agentSkills.find((f) => f.path === '.agents/skills/handoff/SKILL.md');
   assert.ok(skill);
   assert.ok(skill.content.startsWith('---\nname: handoff\n'));
   assert.ok(!skill.content.includes('$ARGUMENTS'));
@@ -116,10 +116,28 @@ test('skill invocation syntax is per-tool, not hardcoded /skill:', () => {
   const spec = SKILL_SPECS[0];
   assert.ok(spec);
   const claude = getTool('claude')?.skillSinks[0];
-  const pi = getTool('pi')?.skillSinks[0];
-  assert.ok(claude && pi);
+  const pi = getTool('pi')?.skillSinks.find((s) => s.kind === 'agent-skills');
+  assert.ok(claude);
   assert.equal(commandNameFor(claude, spec), '/handoff', 'Claude invokes skills as /name');
-  assert.equal(commandNameFor(pi, spec), '/skill:handoff', '/skill: is Pi-specific');
+  assert.equal(
+    commandNameFor({ kind: 'agent-skills', dir: '.agents/skills' }, spec),
+    '/skill:handoff',
+    '/skill: is Pi-specific, and .agents/skills is the dir Pi loads',
+  );
+  assert.equal(pi, undefined, 'Pi reads .agents/skills natively; a .pi/skills copy would collide');
+});
+
+test('REGRESSION no two sinks of one tool write the same skill into dirs Pi scans', () => {
+  // Pi scans both `.pi/skills` and `.agents/skills` (pi docs, "Add it to Pi") and keeps the
+  // first skill of a duplicated name while warning. Shipping `audit` into both dirs printed four
+  // collision warnings at every Pi startup and made the effective copy depend on scan order.
+  const piDirs = (getTool('pi')?.skillSinks ?? []).map((s) => s.dir);
+  assert.ok(!piDirs.includes('.pi/skills'), 'the colliding sink must not come back');
+  for (const tool of TOOLS) {
+    const dirs = tool.skillSinks.map((s) => s.dir);
+    assert.equal(new Set(dirs).size, dirs.length, `${tool.id} writes the same sink twice`);
+  }
+  assert.ok(piDirs.includes('.pi/prompts'), 'prompt templates stay Pi-native');
 });
 
 test('REGRESSION the ARGUMENTS placeholder does not rewrite its own documentation', () => {
