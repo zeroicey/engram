@@ -29,6 +29,9 @@ Single suite: `node --test build/test/commands.test.js`.
 - Never edit text between `<!-- engram:contract:start -->` and `<!-- engram:contract:end -->`.
 - Never edit generated skill carriers (`.claude/`, `.pi/`, `.cursor/`, `.gemini/`, `.github/prompts/`):
   edit `.ai/skills/<name>.md` and run `engram sync`.
+- Extend the bank by declaring it, not by patching the contract: `.ai/sections.json` for a new L2
+  partition, `.ai/skills/<name>.md` for a new skill. Both are inputs engram reads; the contract
+  block is derived from them and is regenerated on every `sync`.
 - New public behaviour needs a test in `test/`, or a comment saying why not.
 
 ## Style

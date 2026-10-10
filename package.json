@@ -1,6 +1,6 @@
 {
   "name": "@zeroicey/engram",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Portable project memory + scaffold for AI coding tools (.ai/ memory bank, cross-tool AGENTS.md/CLAUDE.md/.cursorrules contracts, \u22641.5KB context fingerprint).",
   "keywords": [
     "ai",

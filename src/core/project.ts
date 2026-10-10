@@ -123,6 +123,46 @@ export async function writeFile(file: string, content: string): Promise<void> {
   await fs.writeFile(file, content, 'utf8');
 }
 
+/**
+ * Does writing `file` stay inside `root`, even through symlinks?
+ *
+ * `fs.writeFile` follows symlinks, so a symlinked carrier — `.agents/skills/foo/SKILL.md` pointing at
+ * a file elsewhere, or `.agents/skills` itself pointing at another directory — made `engram sync`
+ * overwrite a file the project never asked engram to own. The check resolves the *nearest existing
+ * ancestor* rather than the parent, because the parent may not exist yet and creating it is exactly
+ * the operation that would escape.
+ */
+export async function resolvesInsideRoot(root: string, file: string): Promise<boolean> {
+  const realRoot = await fs.realpath(root).catch(() => null);
+  if (realRoot === null) return false;
+  let cur = path.dirname(path.resolve(file));
+  for (;;) {
+    const real = await fs.realpath(cur).catch(() => null);
+    if (real !== null) return real === realRoot || real.startsWith(realRoot + path.sep);
+    const up = path.dirname(cur);
+    if (up === cur) return false;
+    cur = up;
+  }
+}
+
+/**
+ * Write a generated file without following a symlink out of the project.
+ *
+ * A symlinked *leaf* is replaced with a real file: the link was a stale indirection at a path engram
+ * owns, and unlinking it is far less destructive than writing through it. A symlinked *directory* is
+ * refused outright — there is nowhere safe to put the file.
+ *
+ * Returns `false` when the write was refused, so the caller can warn instead of failing silently.
+ */
+export async function writeFileGuarded(root: string, file: string, content: string): Promise<boolean> {
+  if (!(await resolvesInsideRoot(root, file))) return false;
+  const link = await fs.lstat(file).catch(() => null);
+  if (link?.isSymbolicLink()) await fs.rm(file, { force: true });
+  await ensureDir(path.dirname(file));
+  await fs.writeFile(file, content, 'utf8');
+  return true;
+}
+
 export async function listFiles(dir: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });

@@ -18,9 +18,20 @@ import { commandNameFor, materialize } from '../adapters/skills.js';
 import { pruneStaleCarriers } from './prune-carriers.js';
 import { CONFIG_PATH, inferToolsFromDisk, knownTools, readConfig, writeConfig } from '../core/config.js';
 import { renderRuleFile, refreshContract } from '../adapters/rules.js';
-import { detectProject, readFileSafe, todayISO, writeIfMissing, writeFile } from '../core/project.js';
-import type { MemoryBank } from '../core/memory.js';
-import { loadMemory } from '../core/memory.js';
+import {
+  detectProject,
+  isDir,
+  listIfPresent,
+  pathExists,
+  readFileSafe,
+  todayISO,
+  writeFile,
+  writeFileGuarded,
+  writeIfMissing,
+} from '../core/project.js';
+import { readSections, sectionTarget, type CustomSection } from '../core/sections.js';
+import { readSkillSources, SKILLS_DIR, type SkillSource } from '../core/skill-source.js';
+import type { ContractExtensions, ContractRow } from '../templates/contract.js';
 
 export interface InitOptions {
   root: string;
@@ -72,6 +83,9 @@ async function writeNeverClobber(
   const abs = path.join(root, relPath);
   const existing = await readFileSafe(abs);
   if (existing !== null) return 'kept';
+  // `readFileSafe` swallows EISDIR, so a *directory* at this path read as "absent" and the report
+  // said `created` for a file that was never written. A false success is worse than a refusal.
+  if (await isDir(abs)) return 'skipped';
   if (!dryRun) await writeIfMissing(abs, content);
   return 'created';
 }
@@ -85,6 +99,7 @@ async function writeGenerated(
 ): Promise<WriteAction> {
   const abs = path.join(root, relPath);
   const existing = await readFileSafe(abs);
+  if (await isDir(abs)) return 'skipped';
   if (dryRun) return existing === null ? 'created' : existing === content ? 'kept' : 'updated';
   if (existing === null) {
     await writeIfMissing(abs, content);
@@ -104,6 +119,11 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   if (tools.length === 0) {
     warnings.push('No valid tools selected — the .ai/ bank was created, but no rule file was written.');
   }
+  // Project-owned input: engram reads it and never writes it, so a bad declaration degrades to a
+  // warning instead of blocking the run.
+  const { sections, warnings: sectionWarnings } = await readSections(opts.root);
+  warnings.push(...sectionWarnings);
+  const extensions = contractExtensions(sections);
   const facts = await detectProject(opts.root, ruleFilePaths(tools));
   const ctx: SkeletonContext = { projectName: facts.name, today: todayISO() };
   const files: InitResult['files'] = [];
@@ -119,7 +139,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     const alsoReadBy = tools
       .filter((t) => t.id !== toolId && t.ruleFiles.some((f) => f.path === def.path))
       .map((t) => t.id);
-    const ctxRender = { projectName: facts.name, alsoReadBy };
+    const ctxRender = { projectName: facts.name, alsoReadBy, extensions };
 
     if (opts.force) {
       // --force means "regenerate from the stub": the previous content is intentionally discarded.
@@ -139,8 +159,13 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     void abs;
   }
 
-  const bank = await loadMemory(opts.root);
-  await materializeSkillSinks(opts.root, bank, tools);
+  // Read *after* the skeleton is written: on a fresh init the canonical skills did not exist a
+  // moment ago, and reading them earlier is what silently produced no carriers at all.
+  const { skills, warnings: skillWarnings, dirExists } = await readSkillSources(opts.root);
+  warnings.push(...skillWarnings);
+  // An absent directory means "this init just wrote the built-ins"; an empty one means the project
+  // deleted them, and resurrecting carriers for those would be the wrong kind of helpful.
+  await materializeSkillSinks(opts.root, skills.length === 0 && !dirExists ? SKILL_SPECS : skills, tools, dryRun);
 
   const bootstrap = buildBootstrapPrompt({ facts, tools, notes: opts.notes });
   const bootstrapPath = '.engram/BOOTSTRAP.md';
@@ -169,25 +194,73 @@ export function ruleFilePaths(tools: ToolDef[]): string[] {
   return [...new Set(tools.flatMap((t) => t.ruleFiles.map((f) => f.path)))];
 }
 
-/** Copy canonical `.ai/skills/*.md` into every tool-native skill/command directory. */
+/**
+ * Turn project-declared sections into the contract rows every rule file will carry.
+ *
+ * This is the whole extension mechanism in one function: the project owns `.ai/sections.json`,
+ * engram owns the rendering, and `sync` pushes the result into every tool's rule file at once
+ * instead of the user repeating a row in eight files that then drift apart.
+ */
+export function contractExtensions(sections: readonly CustomSection[]): ContractExtensions {
+  const read: ContractRow[] = [];
+  const write: ContractRow[] = [];
+  for (const s of sections) {
+    const target = sectionTarget(s);
+    read.push({ label: s.trigger, target });
+    if (s.writeWhen) write.push({ label: s.writeWhen, target });
+  }
+  return { read, write };
+}
+
+/**
+ * Fill in the built-in argument hint for a skill that does not declare one.
+ *
+ * The canonical `.ai/skills/*.md` files carry only `name` and `description` — the argument hint is
+ * a prompt-template detail that never belonged in the portable spec. But the prompt sinks *do* use
+ * it, so reading the directory as the source of truth silently downgraded every built-in carrier's
+ * `argument-hint` to the neutral placeholder. Falling back by name keeps the generated output
+ * identical to what it was before the directory became authoritative, without adding a field to
+ * files that already exist in every repository (which `init` never clobbers).
+ */
+export function withBuiltinArgumentHints(skills: readonly SkillSource[]): SkillSource[] {
+  return skills.map((s) => {
+    if (s.argumentHint) return s;
+    const spec = SKILL_SPECS.find((b) => b.name === s.name);
+    return spec ? { ...s, argumentHint: spec.argumentHint } : s;
+  });
+}
+
+/**
+ * Copy every canonical `.ai/skills/*.md` into every tool-native skill/command directory.
+ *
+ * The canonical directory is the source of truth, not the in-code `SKILL_SPECS`: a project that
+ * adds `.ai/skills/nightly.md` gets it materialised on the next `sync`. Unparseable files are
+ * reported by `readSkillSources` and simply do not get a carrier.
+ */
 export async function materializeSkillSinks(
   root: string,
-  bank: MemoryBank,
+  skills: readonly SkillSource[],
   tools: ToolDef[],
   dryRun = false,
-): Promise<string[]> {
+): Promise<{ written: string[]; refused: string[] }> {
   const written: string[] = [];
-  const specs = SKILL_SPECS.filter((s) => bank.skills.includes(`${s.name}.md`));
-  if (specs.length === 0) return written;
+  const refused: string[] = [];
+  const resolved = withBuiltinArgumentHints(skills);
+  if (resolved.length === 0) return { written, refused };
   for (const tool of tools) {
     for (const sink of tool.skillSinks) {
-      for (const file of materialize(sink, specs)) {
-        if (!dryRun) await writeFile(path.join(root, file.path), file.content);
+      for (const file of materialize(sink, resolved)) {
+        if (!dryRun && !(await writeFileGuarded(root, path.join(root, file.path), file.content))) {
+          // A symlinked carrier directory is a real setup (people redirect generated dirs into a
+          // shared location). Refusing to write is the only safe answer, but it must be loud.
+          refused.push(file.path);
+          continue;
+        }
         written.push(file.path);
       }
     }
   }
-  return written;
+  return { written, refused };
 }
 
 export interface SyncResult {
@@ -201,6 +274,8 @@ export interface SyncResult {
   scope: 'config' | 'inferred' | 'flags' | 'all-tools';
   /** True when the repository has never been initialised. */
   needsInit: boolean;
+  /** Section names declared in `.ai/sections.json`, for reporting. */
+  declaredSections: string[];
 }
 
 /**
@@ -240,11 +315,18 @@ export async function runSync(root: string, toolIds: string[] = [], dryRun = fal
       warnings,
       scope: 'flags',
       needsInit: true,
+      declaredSections: [],
     };
   }
 
-  const bank = await loadMemory(root);
-  const needsInit = !bank.exists;
+  // `loadMemory` is no longer needed here: both facts this used to supply (`bank.exists` and the
+  // skill list) are now cheaper and more honest as direct checks — `needsInit` is "does `.ai/`
+  // exist", and the skills come from the canonical directory itself, which is the source of truth.
+  const needsInit = !(await isDir(path.join(root, '.ai')));
+  const { sections, warnings: sectionWarnings } = await readSections(root);
+  const { skills, warnings: skillWarnings, authoritative, unresolved } = await readSkillSources(root);
+  warnings.push(...sectionWarnings, ...skillWarnings);
+  const extensions = contractExtensions(sections);
   const resolved = all
     ? { toolIds: allToolIds(), scope: 'all-tools' as const }
     : await resolveSyncTools(root, toolIds, dryRun);
@@ -262,7 +344,7 @@ export async function runSync(root: string, toolIds: string[] = [], dryRun = fal
       ruleFiles.push({ path: def.path, action: 'missing' });
       continue;
     }
-    const next = refreshContract(existing, def);
+    const next = refreshContract(existing, def, extensions);
     if (next.health !== 'ok') {
       warnings.push(`${def.path}: ${next.note ?? 'left untouched'}`);
       ruleFiles.push({ path: def.path, action: 'skipped' });
@@ -272,14 +354,36 @@ export async function runSync(root: string, toolIds: string[] = [], dryRun = fal
     ruleFiles.push({ path: def.path, action: next.content === existing ? 'unchanged' : 'updated' });
   }
 
-  const written = await materializeSkillSinks(root, bank, tools, dryRun);
-  const pruned = (await pruneStaleCarriers(root, tools, dryRun)).removed;
-  const missing = SKILL_SPECS.filter((s) => !bank.skills.includes(`${s.name}.md`)).map((s) => s.name);
+  const { written, refused } = await materializeSkillSinks(root, skills, tools, dryRun);
+  for (const rel of refused) warnings.push(`${rel}: refusing to write through a symlinked directory — nothing outside the project is modified`);
+  // Only a *readable* `.ai/skills/` is authority to call a carrier an orphan. `.ai/` existing is not
+  // enough: delete or chmod `.ai/skills/` and the carriers become the only copy of every skill body,
+  // so pruning on an empty list would destroy the last copy of the thing it is comparing against.
+  // The retired-sink branch below runs unconditionally and is safe by construction: a fixed list of
+  // built-in names, and only files carrying engram's own generated header.
+  // A file that exists but did not parse still *exists*: the user is mid-edit, not deleting. Counting
+  // only the successfully parsed names made a `chmod` or a frontmatter typo delete that skill's
+  // carriers in every tool directory — the only remaining copy of the body.
+  const canonicalNames = [...skills.map((s) => s.name), ...unresolved];
+  const pruned = (
+    await pruneStaleCarriers(root, tools, canonicalNames, { dryRun, skillsDirAuthoritative: authoritative })
+  ).removed;
+  const missing = SKILL_SPECS.filter((s) => !skills.some((x) => x.name === s.name)).map((s) => s.name);
   if (needsInit) warnings.push('No .ai/ memory bank here — run `engram init` first.');
+  else if (!authoritative) warnings.push(`Cannot read ${SKILLS_DIR}/ — carriers left alone (pruning needs a readable source of truth).`);
   if (resolved.scope === 'inferred') {
     warnings.push(`No ${CONFIG_PATH} yet — recorded the tool set found on disk: ${resolved.toolIds.join(', ')}.`);
   }
-  return { ruleFiles, skills: written, missingSkills: missing, pruned, warnings, scope: resolved.scope, needsInit };
+  return {
+    ruleFiles,
+    skills: written,
+    missingSkills: missing,
+    pruned,
+    warnings,
+    scope: resolved.scope,
+    needsInit,
+    declaredSections: sections.map((s) => s.name),
+  };
 }
 
 export { commandNameFor, toolSummary };

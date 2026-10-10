@@ -17,10 +17,55 @@ export const CONTRACT_START = `<!-- engram:contract:start v${CONTRACT_VERSION} -
 export const CONTRACT_END = `<!-- engram:contract:end -->`;
 
 /**
- * The `.ai/` memory-bank contract. Appended verbatim to every generated rule
- * file and preserved (idempotently re-written) by `engram sync`.
+ * A row in one of the contract's two tables.
+ *
+ * The block is *derived*, never authored: `sync` regenerates it from this module plus whatever
+ * `.ai/sections.json` declares. That is the whole reason a project can extend the contract without
+ * fighting `sync` — the project owns the input, engram owns the rendering.
  */
-export const AI_CONTRACT = `## Project memory bank (\`.ai/\`) — required contract
+export interface ContractRow {
+  /** Left column: a read trigger or a write event. */
+  label: string;
+  /** Right column, rendered inside backticks. */
+  target: string;
+}
+
+export interface ContractExtensions {
+  /** Extra `trigger → path` rows appended to the read-on-demand table. */
+  read?: ContractRow[];
+  /** Extra `event → path` rows appended to the write-back table. */
+  write?: ContractRow[];
+}
+
+const BASE_READ_ROWS: readonly string[] = [
+  '| changing architecture, stack, module boundaries | `.ai/ARCHITECTURE.md` |',
+  '| deploy, env vars, CI, incidents, ops | `.ai/runbooks/<topic>.md` |',
+  '| a bug that feels familiar / "we fixed this before" | `.ai/pitfalls/cases/<case>.md` |',
+  '| resuming after context loss, compaction or a long session | newest `.ai/sessions/*-handoff.md` |',
+  '| brainstorming a direction, before writing code | `.ai/decisions/` (write a `💭 PROPOSAL`) |',
+];
+
+const BASE_WRITE_ROWS: readonly string[] = [
+  '| a choice that is expensive to reverse | `.ai/decisions/YYYY-MM-DD-<topic>.md` via `/remember-decision` |',
+  '| a pitfall you hit, or a silent failure mode you decoded | `.ai/pitfalls/cases/<case>.md` via `/remember-pitfall` |',
+  '| ending a session with unfinished or fragile work | `.ai/sessions/YYYY-MM-DD-<topic>-handoff.md` via `/handoff` |',
+  '| any change to goal, state or blockers | `.ai/CURRENT_TASK.md` (same edit turn, never "later") |',
+];
+
+const contractRow = (r: ContractRow): string => `| ${r.label} | \`${r.target}\` |`;
+
+/**
+ * The `.ai/` memory-bank contract, with project-declared sections appended.
+ *
+ * `aiContract()` with no extensions is byte-identical to the v1 block engram has always written, so
+ * upgrading never rewrites an existing rule file. A project that declares sections gets extra rows
+ * in both tables — and because those rows are derived from `.ai/sections.json`, deleting the
+ * declaration (or syncing with an older engram) can lose the *rendering*, never the source.
+ */
+export function aiContract(ext: ContractExtensions = {}): string {
+  const readRows = [...BASE_READ_ROWS, ...(ext.read ?? []).map(contractRow)].join('\n');
+  const writeRows = [...BASE_WRITE_ROWS, ...(ext.write ?? []).map(contractRow)].join('\n');
+  return `## Project memory bank (\`.ai/\`) — required contract
 
 This repository keeps a portable, tool-independent memory bank in \`.ai/\`. It outranks chat
 history and your own recollection. Read it on demand with file tools; never paste it wholesale.
@@ -35,20 +80,13 @@ history and your own recollection. Read it on demand with file tools; never past
 
 | Trigger | Read |
 | --- | --- |
-| changing architecture, stack, module boundaries | \`.ai/ARCHITECTURE.md\` |
-| deploy, env vars, CI, incidents, ops | \`.ai/runbooks/<topic>.md\` |
-| a bug that feels familiar / "we fixed this before" | \`.ai/pitfalls/cases/<case>.md\` |
-| resuming after context loss, compaction or a long session | newest \`.ai/sessions/*-handoff.md\` |
-| brainstorming a direction, before writing code | \`.ai/decisions/\` (write a \`💭 PROPOSAL\`) |
+${readRows}
 
 ### Write back (not optional)
 
 | Event | Write |
 | --- | --- |
-| a choice that is expensive to reverse | \`.ai/decisions/YYYY-MM-DD-<topic>.md\` via \`/remember-decision\` |
-| a pitfall you hit, or a silent failure mode you decoded | \`.ai/pitfalls/cases/<case>.md\` via \`/remember-pitfall\` |
-| ending a session with unfinished or fragile work | \`.ai/sessions/YYYY-MM-DD-<topic>-handoff.md\` via \`/handoff\` |
-| any change to goal, state or blockers | \`.ai/CURRENT_TASK.md\` (same edit turn, never "later") |
+${writeRows}
 
 Rules of the bank:
 
@@ -59,6 +97,13 @@ Rules of the bank:
   it cannot, this table is the fallback contract — follow it literally.
 - If the bank and the code disagree, the bank is stale: fix the bank in the same change.
 `;
+}
+
+/**
+ * The default contract, for consumers that only need the built-in block (tests, tools that render
+ * without a project). Call `aiContract(extensions)` when a project declares extra sections.
+ */
+export const AI_CONTRACT = aiContract();
 
 /** Generated-file marker used by `engram sync` to avoid clobbering hand edits. */
 export const GENERATED_MARKER = '<!-- engram:generated -->';
@@ -193,10 +238,10 @@ export function inspectMarkers(text: string): MarkerReport {
 }
 
 /** Replace the contract block in place. A no-op when the block is absent or unpaired. */
-export function replaceContractBlock(text: string): string {
+export function replaceContractBlock(text: string, ext: ContractExtensions = {}): string {
   const span = findContractSpan(text);
   if (!span) return text;
-  const block = `${CONTRACT_START}\n${AI_CONTRACT}${CONTRACT_END}`;
+  const block = `${CONTRACT_START}\n${aiContract(ext)}${CONTRACT_END}`;
   return text.slice(0, span.start) + block + text.slice(span.end);
 }
 
@@ -219,9 +264,9 @@ function joinParts(head: string, tail: string): string {
  * input untouched. Appending a second opening marker cannot repair the file; it only makes the
  * damage harder to see. Callers detect this with `inspectMarkers` and tell the user.
  */
-export function withContract(body: string): string {
+export function withContract(body: string, ext: ContractExtensions = {}): string {
   const trimmed = body.trim();
-  const block = `${CONTRACT_START}\n${AI_CONTRACT}${CONTRACT_END}`;
+  const block = `${CONTRACT_START}\n${aiContract(ext)}${CONTRACT_END}`;
   if (!trimmed) return `${block}\n`;
   if (inspectMarkers(trimmed).health === 'unbalanced') return `${body}\n`;
   if (findContractSpan(trimmed)) {

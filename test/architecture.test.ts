@@ -17,8 +17,29 @@ import { test } from 'node:test';
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const SRC = path.join(ROOT, 'src');
 
-/** Packages `core/` may import from, besides itself and the Node standard library. */
-const CORE_ALLOWED = /^(\.|node:)/;
+/**
+ * Packages `core/` may import from, besides itself and the Node standard library.
+ *
+ * `^(\.|node:)` was the original pattern and it accepted *every* relative specifier — including
+ * `../adapters/index.js` — so the guard was green while the rule it enforces was violated. A
+ * relative import from `core/` must now stay inside `core/`, i.e. start with `./`.
+ */
+const CORE_ALLOWED = /^(\.\/|node:)/;
+
+/**
+ * Cross-layer imports that predate this guard and are tolerated *explicitly*.
+ *
+ * Listing them is the point: the test now fails on any new violation, and an entry here is a
+ * deliberate decision rather than an accident the regex could not see. Both are tracked as debt in
+ * `.ai/ARCHITECTURE.md` — removing either requires the refactor described there, not a new entry.
+ */
+const CORE_KNOWN_EXCEPTIONS = new Set([
+  // `inferToolsFromDisk` maps marker directories back to tool ids, which needs the registry.
+  // Inverting it (core takes the list as a parameter) is the real fix.
+  'core/config.ts → ../adapters/index.js',
+  // A single marker constant. Moving it to `core/` and re-exporting from `templates/` is the fix.
+  'core/project.ts → ../templates/contract.js',
+]);
 
 async function walk(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -45,13 +66,33 @@ test('core/ imports nothing from commands, adapters or templates', async () => {
   for (const file of files) {
     for (const spec of importsOf(await fs.readFile(file, 'utf8'))) {
       if (CORE_ALLOWED.test(spec)) continue;
-      violations.push(`${rel(file)} → ${spec}`);
+      const edge = `${rel(file)} → ${spec}`;
+      if (CORE_KNOWN_EXCEPTIONS.has(edge)) continue;
+      violations.push(edge);
     }
   }
   assert.deepEqual(
     violations,
     [],
     `core/ must stay the leaf layer:\n  ${violations.join('\n  ')}`,
+  );
+});
+
+test('the core/ layering allowlist has no stale entries', async () => {
+  // An exception that no longer exists must be deleted, or the allowlist quietly becomes a place to
+  // hide violations. This is what keeps the guard above honest rather than merely green.
+  const files = await walk(path.join(SRC, 'core'));
+  const actual = new Set<string>();
+  for (const file of files) {
+    for (const spec of importsOf(await fs.readFile(file, 'utf8'))) {
+      if (CORE_ALLOWED.test(spec)) continue;
+      actual.add(`${rel(file)} → ${spec}`);
+    }
+  }
+  assert.deepEqual(
+    [...CORE_KNOWN_EXCEPTIONS].filter((e) => !actual.has(e)),
+    [],
+    'these allowlist entries no longer correspond to a real import — delete them',
   );
 });
 

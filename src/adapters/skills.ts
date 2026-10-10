@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { yamlScalar } from '../core/yaml.js';
-import type { SkillSpec } from '../templates/skills.js';
+import type { SkillSource } from '../templates/skills.js';
 import type { SkillSink } from './index.js';
 import { generatedHeader } from './rules.js';
 
@@ -13,13 +13,13 @@ export interface MaterializedFile {
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
 /** Frontmatter + body of a canonical skill, used verbatim for Agent Skills dirs. */
-function agentSkillFile(spec: SkillSpec, sourcePath: string): string {
+function agentSkillFile(spec: SkillSource, sourcePath: string): string {
   const header = ['---', `name: ${spec.name}`, `description: ${yamlScalar(spec.description)}`, '---'].join('\n');
   return `${header}\n\n${generatedHeader(sourcePath)}\n\n${spec.body.trim()}\n`;
 }
 
 /** Slash-command template: `ARGUMENTS` placeholder becomes the tool's own syntax. */
-function promptTemplate(spec: SkillSpec, sourcePath: string, frontmatter: 'slash' | 'copilot'): string {
+function promptTemplate(spec: SkillSource, sourcePath: string, frontmatter: 'slash' | 'copilot'): string {
   // Copilot prompt files use VS Code variable syntax, not `$ARGUMENTS`; shipping the literal
   // token would hand the model a garbled instruction instead of an argument.
   const body = substituteArgs(spec.body, frontmatter === 'copilot' ? '${input:arguments}' : '$ARGUMENTS');
@@ -29,7 +29,7 @@ function promptTemplate(spec: SkillSpec, sourcePath: string, frontmatter: 'slash
       : [
           '---',
           `description: ${yamlScalar(spec.description)}`,
-          `argument-hint: ${yamlScalar(spec.argumentHint)}`,
+          `argument-hint: ${yamlScalar(spec.argumentHint ?? 'arguments')}`,
           '---',
         ].join('\n');
   return `${fm}\n\n${generatedHeader(sourcePath)}\n\n${body}\n`;
@@ -49,7 +49,7 @@ function tomlEscape(body: string): string {
   return body.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
 }
 
-function geminiCommand(spec: SkillSpec, sourcePath: string): string {
+function geminiCommand(spec: SkillSource, sourcePath: string): string {
   const body = tomlEscape(substituteArgs(spec.body, '{{args}}'));
   return [
     `# ${generatedHeader(sourcePath)}`,
@@ -63,7 +63,7 @@ function geminiCommand(spec: SkillSpec, sourcePath: string): string {
 }
 
 /** Human-facing name of the command this sink produces, for init output. */
-export function commandNameFor(sink: SkillSink, spec: SkillSpec): string {
+export function commandNameFor(sink: SkillSink, spec: SkillSource): string {
   switch (sink.kind) {
     case 'agent-skills':
       return sink.invoke === 'plain' ? `/${spec.name}` : `/skill:${spec.name}`;
@@ -75,7 +75,7 @@ export function commandNameFor(sink: SkillSink, spec: SkillSpec): string {
 }
 
 /** Materialise every canonical skill spec into one tool sink. */
-export function materialize(sink: SkillSink, specs: SkillSpec[], sourceDir = '.ai/skills'): MaterializedFile[] {
+export function materialize(sink: SkillSink, specs: SkillSource[], sourceDir = '.ai/skills'): MaterializedFile[] {
   return specs.map((spec) => {
     const sourcePath = path.posix.join(sourceDir, `${spec.name}.md`);
     switch (sink.kind) {

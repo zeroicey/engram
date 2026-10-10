@@ -26,11 +26,11 @@ code does **not** prove output landed where `bin` expects (see `.ai/pitfalls/cas
 | Path | Owns |
 | --- | --- |
 | `src/cli.ts` | argv parsing, dispatch, human output |
-| `src/core/` | leaf layer: fs helpers, project detection, `.ai/` parsing, fingerprint budgeting |
-| `src/templates/` | contract block, `.ai/` skeleton, skill specs, bootstrap meta-prompt. No fs access |
+| `src/core/` | leaf layer: fs helpers, project detection, `.ai/` parsing, declared sections, skill sources, fingerprint budgeting |
+| `src/templates/` | contract block and its row tables, `.ai/` skeleton, built-in skill specs, bootstrap meta-prompt. No fs access |
 | `src/adapters/` | per-tool registry and renderers for rule files and skill carriers |
 | `src/commands/` | `init`, `dump`, `new`, `sync` orchestration (`sync` dispatch lives in `cli.ts`) |
-| `test/` | 6 `node:test` suites, incl. `architecture.test.ts` which enforces the layering |
+| `test/` | 8 `node:test` suites, incl. `architecture.test.ts` which enforces the layering |
 | `.ai/` | this project's own memory bank (dogfooded) |
 
 Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templates/meta-prompt`.
@@ -50,11 +50,16 @@ Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templ
   `.gemini/`, `.github/prompts/` are generated — edit the canonical file and run `engram sync`.
   Pi reads `.agents/skills/`; do not add a `.pi/skills/` copy (same skill name, two scanned
   dirs, collision warning at every startup).
+- `.ai/` is an extension surface, not a fixed schema. A new L2 partition is declared in
+  `.ai/sections.json` and reaches every rule file on `engram sync`; a new skill is just
+  `.ai/skills/<name>.md` with `name` + `description` frontmatter. Both are project-owned files
+  engram reads and never writes — which is why hand-editing the derived contract block is never
+  the right move.
 - `tsconfig.json` `include` covers `src/` and `test/`; output lands in `build/{src,test}`.
 
 ## Definition of done
 
-1. `npm test` passes (106 tests today, `node --test` on compiled output).
+1. `npm test` passes (147 tests today, `node --test` on compiled output).
 2. `npm run typecheck` is clean.
 3. `node build/src/cli.js dump` stays inside its byte budget.
 4. Behaviour that the memory bank records — an invariant, a decision, a pitfall — is written back

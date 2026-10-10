@@ -5,12 +5,13 @@ import { pathToFileURL } from 'node:url';
 import { TOOLS, DEFAULT_TOOL_IDS, allToolIds } from './adapters/index.js';
 import { runInit, runSync } from './commands/init.js';
 import { renderDump, runDump } from './commands/dump.js';
-import { isMemoryKind, runNew, type MemoryKind } from './commands/new.js';
+import { isMemoryKind, runNew, runNewSection, type MemoryKind } from './commands/new.js';
+import { readSections } from './core/sections.js';
 import { SKILL_NAMES } from './templates/skills.js';
 import { toolSummary } from './templates/meta-prompt.js';
 import { writeFile } from './core/project.js';
 
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 
 /**
  * `engram dump | head -1` is the canonical way to preview the fingerprint. When the reader exits
@@ -90,7 +91,8 @@ const HELP = `engram v${VERSION} — portable project memory + scaffold for AI c
 USAGE
   engram init [options]        create .ai/, rule-file contracts, skills, bootstrap meta-prompt
   engram dump [options]        print the ≤1.5KB session fingerprint
-  engram new <kind> <title>    scaffold one memory file (decision|session|pitfall|runbook)
+  engram new <kind> <title>    scaffold one memory file (decision|session|pitfall|runbook,
+                               plus any section declared in .ai/sections.json)
   engram sync [options]        refresh contracts + re-materialise skill files
   engram tools                 list supported AI tools
   engram --help | --version
@@ -169,6 +171,7 @@ async function cmdDump(root: string, args: Args): Promise<number> {
     return 2;
   }
   for (const e of result.readErrors) console.error(`warn: unreadable ${e}`);
+  for (const w of result.warnings) console.error(`warn: ${w}`);
 
   const out = renderDump(result, format);
   process.stdout.write(out.endsWith('\n') ? out : `${out}\n`);
@@ -189,8 +192,27 @@ async function cmdDump(root: string, args: Args): Promise<number> {
 async function cmdNew(root: string, args: Args): Promise<number> {
   const kind = args._[1] ?? '';
   const title = args._[2];
+  // A declared section is scaffolded from the project's own `_TEMPLATE.md`, so `new` covers
+  // `.ai/journal/` without engram knowing what a journal entry is.
+  const { sections, warnings } = await readSections(root);
+  for (const w of warnings) console.error(`warn: ${w}`);
+  const section = sections.find((s) => s.name === kind);
+
+  if (section && title) {
+    try {
+      const res = await runNewSection({ root, section, title, force: flag(args.flags, 'force') });
+      console.log(res.created ? `created ${res.path}` : `exists (use --force to overwrite) ${res.path}`);
+      return 0;
+    } catch (err) {
+      // Reachable only for a section that validated but still resolves outside its own directory —
+      // a stack trace would bury the one line that matters.
+      console.error(`error: ${(err as Error).message}`);
+      return 1;
+    }
+  }
   if (!isMemoryKind(kind) || !title) {
-    console.error('usage: engram new <decision|session|pitfall|runbook> <title>');
+    const declared = sections.map((s) => s.name).join('|');
+    console.error(`usage: engram new <decision|session|pitfall|runbook${declared ? `|${declared}` : ''}> <title>`);
     return 1;
   }
   const res = await runNew({ root, kind: kind as MemoryKind, title, force: flag(args.flags, 'force') });
@@ -204,6 +226,13 @@ async function cmdSync(root: string, args: Args): Promise<number> {
   const res = await runSync(root, toolIds, flag(args.flags, 'dry-run'), flag(args.flags, 'all'));
   for (const f of res.ruleFiles) console.log(`${f.action.padEnd(9)} ${f.path}`);
   console.log(`${res.skills.length} skill files materialised (${res.scope === 'config' ? 'recorded tool set' : res.scope})`);
+  // Bounded on purpose: a project with hundreds of declared sections must not turn `sync` into a
+  // wall of text. The full list is always readable in `.ai/sections.json`.
+  if (res.declaredSections.length) {
+    const shown = res.declaredSections.slice(0, 8).join(', ');
+    const more = res.declaredSections.length > 8 ? `, … +${res.declaredSections.length - 8}` : '';
+    console.log(`${res.declaredSections.length} declared section(s): ${shown}${more} (.ai/sections.json)`);
+  }
   for (const p of res.pruned) console.log(`pruned     ${p}`);
   for (const m of res.missingSkills) console.error(`warn: missing canonical skill .ai/skills/${m}.md`);
   for (const w of res.warnings) console.error(`warn: ${w}`);

@@ -23,6 +23,8 @@ export interface DumpResult extends Fingerprint {
    * is the most damaging thing this tool could do.
    */
   readErrors: string[];
+  /** Content problems in project-owned inputs (a malformed `sections.json`, …), not read failures. */
+  warnings: string[];
 }
 
 export async function runDump(opts: DumpOptions): Promise<DumpResult> {
@@ -35,6 +37,7 @@ export async function runDump(opts: DumpOptions): Promise<DumpResult> {
       exitCode: 2,
       hint: `No .ai/ memory bank at ${path.join(opts.root, '.ai')}. Run \`engram init\` first.`,
       readErrors: bank.readErrors,
+      warnings: bank.warnings,
       data: {
         project: path.basename(opts.root),
         generated: new Date().toISOString(),
@@ -59,7 +62,7 @@ export async function runDump(opts: DumpOptions): Promise<DumpResult> {
     proposals: opts.proposals,
     pitfalls: opts.pitfalls,
   });
-  return { ...fp, exitCode: 0, readErrors: bank.readErrors };
+  return { ...fp, exitCode: 0, readErrors: bank.readErrors, warnings: bank.warnings };
 }
 
 export interface DumpCliOptions extends DumpOptions {

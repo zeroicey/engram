@@ -16,6 +16,15 @@ export interface SkillSpec {
   body: string;
 }
 
+/**
+ * Anything that can be materialised into a tool carrier.
+ *
+ * The built-in `SKILL_SPECS` are the first four files of `.ai/skills/`, but the directory is the
+ * source of truth: a project-authored skill has no declared argument hint, so it is optional here
+ * and the prompt-template sinks fall back to a neutral placeholder.
+ */
+export type SkillSource = Omit<SkillSpec, 'argumentHint'> & { argumentHint?: string };
+
 const frontmatter = (s: SkillSpec): string =>
   ['---', `name: ${s.name}`, `description: ${yamlScalar(s.description)}`, '---'].join('\n');
 

@@ -7,6 +7,7 @@ import {
   replaceContractBlock,
   withContract,
   withoutContract,
+  type ContractExtensions,
 } from '../templates/contract.js';
 import type { RuleFileDef, RuleFileKind } from './index.js';
 
@@ -14,6 +15,8 @@ export interface RuleRenderContext {
   projectName: string;
   /** Sibling tools sharing the same file, e.g. AGENTS.md → codex, pi. */
   alsoReadBy: string[];
+  /** Project-declared `.ai/` sections, rendered into the contract's two tables. */
+  extensions?: ContractExtensions;
 }
 
 const TODO_BLOCK = (projectName: string): string => `# ${projectName} — agent instructions
@@ -157,7 +160,7 @@ export function renderRuleFile(
 
   const shared = ctx.alsoReadBy.length > 0 ? `\n\n_Read by: ${ctx.alsoReadBy.join(', ')}._` : '';
   const composed = `${head}${body.trim()}${shared}`.trim();
-  return { content: withContract(`${composed}\n\n${MANAGED_MARKER}`), health: 'ok' };
+  return { content: withContract(`${composed}\n\n${MANAGED_MARKER}`, ctx.extensions), health: 'ok' };
 }
 
 /** Convenience wrapper for callers that only need the text (tests, `--dry-run`). */
@@ -173,7 +176,11 @@ export function renderRuleText(
  * Replace the contract block of an existing file in place.
  * This is the *only* implementation of that splice; `renderRuleFile` composes, never splices.
  */
-export function refreshContract(existing: string, def: RuleFileDef): RuleRenderResult {
+export function refreshContract(
+  existing: string,
+  def: RuleFileDef,
+  extensions: ContractExtensions = {},
+): RuleRenderResult {
   if (inspectMarkers(existing).health === 'unbalanced') {
     return {
       content: existing,
@@ -183,9 +190,9 @@ export function refreshContract(existing: string, def: RuleFileDef): RuleRenderR
   }
   if (inspectMarkers(existing).health === 'absent') {
     // No block yet: adopt the file, preserving everything that is already there.
-    return renderRuleFile(def, { projectName: 'this project', alsoReadBy: [] }, existing);
+    return renderRuleFile(def, { projectName: 'this project', alsoReadBy: [], extensions }, existing);
   }
-  return { content: replaceContractBlock(existing), health: 'ok' };
+  return { content: replaceContractBlock(existing, extensions), health: 'ok' };
 }
 
 /** Header stamped on fully generated files (skill sinks) so they can be safely overwritten. */

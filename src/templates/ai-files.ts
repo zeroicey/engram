@@ -30,8 +30,8 @@ export function aiReadme(ctx: SkeletonContext): string {
   return `# .ai/ — project memory bank
 
 Portable, tool-independent memory for AI coding tools. Every supported tool (Claude Code, Codex,
-Pi, Cursor, Windsurf, Copilot, Gemini CLI, OpenCode, …) reads and writes **this same directory**,
-so switching tools never resets context.
+Pi, DeepSeek Harness, Cursor, Windsurf, Copilot, Gemini CLI, OpenCode, …) reads and writes **this
+same directory**, so switching tools never resets context.
 
 ## Layer model (how context is loaded)
 
@@ -53,6 +53,50 @@ so switching tools never resets context.
 | \`.ai/runbooks/\` | deploy / env / CI / incident SOPs | one-off trivia |
 | \`.ai/pitfalls/cases/\` | decoded failure modes, each with cause → fix → guard | duplicate bugs |
 | \`.ai/skills/\` | canonical, portable skill specs (\`/handoff\`, …) | tool-specific config |
+
+## Extending this bank
+
+This directory is yours, not the tool's. Three zones decide what happens when you edit:
+
+| Zone | Paths | \`engram sync\` |
+| --- | --- | --- |
+| tool-owned | the contract block in every rule file, generated carriers, \`.engram/\` | regenerated — do not hand-edit |
+| shared, you own the input | this whole \`.ai/\` tree, \`.ai/sections.json\`, \`.ai/skills/*.md\` | read, never clobbered |
+| yours alone | rule-file body above the contract, notes, anything outside the above | never touched |
+
+**A new partition.** Declare it in \`.ai/sections.json\` — then one edit teaches every tool about it,
+instead of you repeating a row in eight rule files that drift apart:
+
+\`\`\`json
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "journal",
+      "dir": ".ai/journal",
+      "trigger": "what happened in last night's experiment window",
+      "writeWhen": "a GPU window ends",
+      "file": "YYYY-MM-DD-night-<slug>.md",
+      "status": ["📝 DRAFT(auto)", "✅ REVIEWED"]
+    }
+  ]
+}
+\`\`\`
+
+\`sync\` renders the section into the contract's read and write tables and into \`engram dump\`;
+\`engram new journal "window 4"\` scaffolds an entry from \`.ai/journal/_TEMPLATE.md\` when that file
+exists. Delete the declaration and the rows disappear — the contract is derived, never authored, so
+there is nothing to un-edit. Two things are refused, because they would change behaviour that
+already exists: a \`dir\` inside a built-in partition (\`decisions\`, \`sessions\`, \`runbooks\`,
+\`pitfalls\`, \`skills\`) or outside \`.ai/\`, and a \`name\` that is a built-in \`engram new\` verb
+(\`decision\`, \`session\`, \`pitfall\`, \`runbook\`). Both warn and skip; nothing else is.
+
+**A new skill.** Drop \`.ai/skills/<name>.md\` with \`name\` and \`description\` frontmatter, run
+\`engram sync\`, and every tool gets its carrier. Delete the file and the carrier goes with it. A
+file whose frontmatter is missing, uses a YAML block scalar (\`>\` / \`|\`), or whose \`name\`
+disagrees with the file name is reported and skipped — a skill that silently did not load is worse
+than one that loudly did not. Two things are skipped in silence, on purpose: a file starting with
+\`_\` (a template, like \`_TEMPLATE.md\`), and anything that is not a regular file.
 
 ## Operating contract (read before acting)
 

@@ -113,6 +113,42 @@ See `.ai/decisions/2026-10-01-canonical-skills-single-source.md`.
 | `/remember-decision <topic>` | expensive-to-reverse choice, brainstorming | `.ai/decisions/…` with status machine |
 | `/audit [scope]` | before a release, after long absence | ranked drift list: code vs bank |
 
+Those four are only the starting set. `.ai/skills/` is the source of truth: drop
+`.ai/skills/<name>.md` with `name` + `description` frontmatter, run `engram sync`, and every tool
+gets its carrier. Delete the file and `sync` prunes the carrier — but only if engram generated it,
+so a hand-written skill in the same directory survives.
+
+## Extending the bank
+
+The bank belongs to the project. Nothing you write in `.ai/` is ever overwritten, and the two
+things engram does regenerate are driven by files *you* own:
+
+**A new partition** — declare it once in `.ai/sections.json`:
+
+```json
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "journal",
+      "dir": ".ai/journal",
+      "trigger": "what happened in last night's experiment window",
+      "writeWhen": "a GPU window ends",
+      "file": "YYYY-MM-DD-night-<slug>.md",
+      "status": ["📝 DRAFT(auto)", "✅ REVIEWED"]
+    }
+  ]
+}
+```
+
+`engram sync` renders the section into the read-on-demand and write-back tables of **every** rule
+file, and `engram dump` advertises it so an agent learns the partition exists. `engram new journal
+"window 4"` scaffolds an entry, from `.ai/journal/_TEMPLATE.md` if you provide one — your template,
+your shape. Remove the declaration and the rows disappear: the contract is derived, never authored,
+which is why hand-editing it was never the right move.
+
+A malformed `.ai/sections.json` produces a warning and an unchanged contract, never a failed run.
+
 ## Working with it day to day
 
 ```bash
@@ -145,7 +181,7 @@ documents itself with engram.
 ```bash
 npm test && npm pack --dry-run
 npm publish --access public
-git tag -a v0.2.1 -m "engram 0.2.0" && git push origin main --follow-tags
+git tag -a v0.4.0 -m "engram 0.4.0" && git push origin main --follow-tags
 ```
 
 Full procedure: `.ai/runbooks/release.md`. Setup: `.ai/runbooks/dev-setup.md`.

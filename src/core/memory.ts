@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { isDir, isTemplateName, listIfPresent, readIfPresent, type ListResult, type ReadResult } from './project.js';
+import { readSections, type CustomSection } from './sections.js';
 
 export type DecisionStatus = 'PROPOSAL' | 'ACCEPTED' | 'REJECTED' | 'UNKNOWN';
 
@@ -45,10 +46,23 @@ export interface MemoryBank {
   /** Names of `.ai/skills/*.md`. */
   skills: string[];
   /**
+   * Extra L2 partitions the project declared in `.ai/sections.json`.
+   *
+   * Read-only from engram's side: the file is the project's, and this is how a section the tool
+   * did not invent still reaches the fingerprint and the rule-file contract.
+   */
+  sections: CustomSection[];
+  /**
    * Paths that exist but could not be read (EACCES, EMFILE, …).
    * A non-empty list means the bank is *partially* unreadable, not empty — `dump` says so.
    */
   readErrors: string[];
+  /**
+   * Content problems in project-owned inputs — a malformed `sections.json`, an invalid declared
+   * name. These are *not* read failures, and reporting them as "unreadable" (which `dump` did) sent
+   * the reader looking for a permissions bug that did not exist.
+   */
+  warnings: string[];
 }
 
 const DATE_RE = /^(\d{4}-\d{2}-\d{2})-(.+?)(\.md|-handoff\.md)$/;
@@ -309,7 +323,9 @@ export async function loadMemory(root: string): Promise<MemoryBank> {
       pitfalls: [],
       runbooks: [],
       skills: [],
+      sections: [],
       readErrors: errors,
+      warnings: [],
     };
   }
 
@@ -320,6 +336,7 @@ export async function loadMemory(root: string): Promise<MemoryBank> {
   const runbooks = await readEntries(path.join(dir, 'runbooks'));
   const pitfalls = await readEntries(path.join(dir, 'pitfalls', 'cases'));
   const skills = await listIfPresent(path.join(dir, 'skills'));
+  const declared = await readSections(root);
 
   return {
     root,
@@ -335,6 +352,8 @@ export async function loadMemory(root: string): Promise<MemoryBank> {
       .sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || byDateDesc(a, b)),
     runbooks: runbooks.entries.sort(byDateDesc),
     skills: skills.names.filter((f) => f.endsWith('.md') && !isTemplateName(f)),
+    sections: declared.sections,
     readErrors: [...errors, ...decisions.errors, ...sessions.errors, ...runbooks.errors, ...pitfalls.errors, ...(skills.error ? [skills.error] : [])],
+    warnings: declared.warnings,
   };
 }

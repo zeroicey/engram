@@ -1,4 +1,5 @@
 import { CANONICAL_SKILL_NAMES, skillCommandList } from './canon.js';
+import { sectionTarget } from './sections.js';
 import type { DecisionEntry, MemoryBank } from './memory.js';
 
 export interface FingerprintOptions {
@@ -69,7 +70,12 @@ const line = (label: string, value: string, max = 110): string =>
   value ? `${label}: ${trimTo(value, max)}` : '';
 
 interface FingerprintSection {
-  heading: string;
+  /**
+   * Omitted for a *continuation*: lines appended to the block above without a heading of their own.
+   * Declared sections use this so the extra line can be dropped on a tight budget without leaving a
+   * dangling heading behind.
+   */
+  heading?: string;
   lines: string[];
   priority: number;
 }
@@ -133,7 +139,21 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
     '  state: .ai/CURRENT_TASK.md · map: .ai/README.md · architecture: .ai/ARCHITECTURE.md',
     `  skills: ${skillCommandList(skillsText)} (specs: .ai/skills/)`,
   ];
+  // Project-declared sections are the one part of the bank engram did not invent, so the
+  // fingerprint names them: an agent that never learns `.ai/journal/` exists will not read it.
   sections.push({ heading: 'POINTERS', lines: pointers, priority: 4 });
+  if (bank.sections.length) {
+    const shownSections = bank.sections.slice(0, 4);
+    const tail = bank.sections.length > shownSections.length ? ' · …' : '';
+    // Priority 3.5 — its own elastic tier, so it is dropped *before* PITFALLS, RECENT and BINDING.
+    // Putting it in POINTERS (priority 4, never dropped) made a one-line declaration evict the whole
+    // PITFALLS block, then RECENT, then the binding decisions: the new feature outranked the content
+    // it exists to complement. Learning that `.ai/journal/` exists is worth less than the pitfalls.
+    sections.push({
+      lines: [`  sections: ${shownSections.map((s) => `${s.name} → ${sectionTarget(s)}`).join(' · ')}${tail}`],
+      priority: 3.5,
+    });
+  }
 
   const header = (): string[] => [
     `# engram v1 · ${project} · ${generated.slice(0, 10)}`,
@@ -175,8 +195,11 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
   };
 }
 
-/** Priorities whose sections may be dropped or shortened when the byte budget is tight. */
-const ELASTIC_PRIORITIES = [3, 2, 1];
+/**
+ * Priorities whose sections may be dropped or shortened when the byte budget is tight, in drop
+ * order. 3.5 is the declared-sections continuation: least important, so it goes first.
+ */
+const ELASTIC_PRIORITIES = [3.5, 3, 2, 1];
 
 /**
  * Render sections into at most `maxBytes` UTF-8 bytes.
@@ -192,7 +215,7 @@ function fitToBudget(
   maxBytes: number,
 ): { markdown: string; truncated: boolean } {
   const render = (kept: FingerprintSection[]): string =>
-    [...header(), ...kept.flatMap((s) => [s.heading, ...s.lines]), ''].join('\n');
+    [...header(), ...kept.flatMap((s) => (s.heading === undefined ? s.lines : [s.heading, ...s.lines])), ''].join('\n');
 
   const size = (kept: FingerprintSection[]): number =>
     Buffer.byteLength(render(kept), 'utf8');
@@ -223,11 +246,15 @@ function fitToBudget(
 function hardTruncate(text: string, maxBytes: number): string {
   if (maxBytes <= 1) return '';
   const marker = '…';
-  const budget = maxBytes - Buffer.byteLength(marker, 'utf8');
+  // One byte is reserved for the framing newline the CLI appends to stdout. Without it,
+  // `dump --max-bytes 50` emitted 51 bytes while reporting "50 bytes · at budget" — the `--out`
+  // file was correct, so the discrepancy was invisible unless you piped to `wc -c`.
+  const ceiling = maxBytes - 1;
+  const budget = ceiling - Buffer.byteLength(marker, 'utf8');
   // The marker only fits if the ceiling can hold it; otherwise emit plain content. Returning
   // `'…'` unconditionally meant `--max-bytes 2` produced 3 bytes — a ceiling that overflowed by
   // exactly the amount it could not afford.
-  const room = budget > 0 ? budget : maxBytes;
+  const room = budget > 0 ? budget : ceiling;
   let out = '';
   let used = 0;
   for (const ch of text) {
@@ -237,8 +264,8 @@ function hardTruncate(text: string, maxBytes: number): string {
     used += w;
   }
   const body = out.replace(/\s+$/u, '');
-  if (budget <= 0) return body;
-  return `${body}${marker}`;
+  if (budget <= 0) return `${body}\n`;
+  return `${body}${marker}\n`;
 }
 
 function path_label(bank: MemoryBank): string {
