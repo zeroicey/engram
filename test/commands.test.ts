@@ -9,7 +9,7 @@ import { SKILL_NAMES } from '../src/templates/skills.js';
 import { detectProject } from '../src/core/project.js';
 import { sandbox } from './helpers.js';
 
-const TOOL_SET = ['agents', 'claude', 'cursor', 'pi', 'copilot', 'gemini', 'windsurf', 'codex'];
+const TOOL_SET = ['agents', 'claude', 'cursor', 'pi', 'copilot', 'gemini', 'windsurf', 'codex', 'dsh'];
 
 test('init creates the bank, rule files, carriers and the bootstrap prompt', async (t) => {
   const sb = await sandbox();
@@ -132,6 +132,28 @@ test('init reports unknown tools instead of crashing', async (t) => {
   const res = await runInit({ root: sb.root, toolIds: ['agents', 'emacs-ai'] });
   assert.match(res.warnings.join(' '), /Unknown tool "emacs-ai"/);
   assert.ok(await sb.exists('AGENTS.md'));
+});
+
+test('init for dsh wires AGENTS.md + the shared .agents/skills carrier only', async (t) => {
+  // dsh scans `.dsh/skills` as well as `.agents/skills` (dsh-skill-filesystem, ranks 100/200).
+  // Shipping a second copy under `.dsh/skills` would shadow the portable carrier and warn on
+  // every session, so `init` must leave `.dsh/` alone entirely.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await sb.write('package.json', JSON.stringify({ name: 'harness-app' }));
+
+  const res = await runInit({ root: sb.root, toolIds: ['dsh'] });
+
+  assert.ok(res.files.some((f) => f.path === 'AGENTS.md' && f.action === 'created'));
+  assert.ok(await sb.exists('.agents/skills/handoff/SKILL.md'), 'shared Agent Skills carrier');
+  assert.ok(await sb.exists('.agents/skills/audit/SKILL.md'));
+  assert.equal(await sb.exists('.dsh/skills/handoff/SKILL.md'), false, 'the shadowing copy must not exist');
+  assert.equal(await sb.exists('.dsh'), false, 'engram writes nothing under .dsh/');
+  const config = JSON.parse(await sb.read('.engram/config.json')) as { tools: string[] };
+  assert.deepEqual(config.tools, ['dsh']);
+  const bootstrap = await sb.read('.engram/BOOTSTRAP.md');
+  assert.ok(bootstrap.includes('DeepSeek Harness'), 'the meta-prompt documents the tool');
+  assert.ok(/\.agents\/skills/.test(bootstrap), 'the carrier dir is named for the assistant');
 });
 
 test('sync refreshes a damaged contract and re-materialises carriers', async (t) => {

@@ -35,6 +35,9 @@ regression tests; what remains is publishing.
 - [x] v0.3.0: Pi skill-collision fix — one carrier dir (`.agents/skills`), `.pi/skills` retired
 - [x] v0.3.0: `init` records the tool set in `.engram/config.json`; `sync` inherits it (`--all` overrides)
 - [x] v0.3.0: `sync` prunes carriers in retired dirs only, and only files carrying the generated marker
+- [x] v0.3.0: `dsh` (DeepSeek Harness) adapter — shares `AGENTS.md` + `.agents/skills`; no `.dsh/skills`
+      copy, because `dsh-skill-filesystem` scans both roots and first-wins by rank (see
+      `.ai/decisions/2026-10-10-dsh-adapter-shared-agent-skills.md`)
 - [x] Ran `engram sync` in `skybrain` and `skyeye` — `.pi/skills` pruned, tool sets recorded
 - [ ] `research` deliberately left untouched (user request) — run `engram sync` there when wanted
 - [ ] Publish `@zeroicey/engram@0.3.0`
@@ -43,7 +46,8 @@ regression tests; what remains is publishing.
 
 Branch `main`, single commit. `src/` is 13 TypeScript modules, `test/` 7 suites, zero runtime deps.
 Build: `npm run build` → `build/`; tests run against compiled output on purpose (the shipped
-artifact is what gets tested). `engram dump` currently renders 1414 bytes.
+artifact is what gets tested). `engram dump` currently renders 1414 bytes. Nine tool adapters:
+`agents`, `codex`, `claude`, `cursor`, `windsurf`, `copilot`, `gemini`, `pi`, `dsh`.
 
 ## Blockers
 
@@ -59,7 +63,7 @@ artifact is what gets tested). `engram dump` currently renders 1414 bytes.
 - `.ai/pitfalls/cases/fingerprint-table-noise.md` — regex parsing swallows Markdown tables.
 - `.ai/pitfalls/cases/contract-marker-matched-in-prose.md` — markers count only on their own line.
 - `.ai/pitfalls/cases/agent-scans-two-skill-dirs.md` — one agent can read two carrier dirs; check
-  the new sink against that agent's docs before adding it.
+  the new sink against that agent's docs before adding it (Pi, now also `dsh` root ranks).
 
 ## Next action
 

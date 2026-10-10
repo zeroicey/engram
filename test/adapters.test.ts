@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TOOLS, getTool, ruleFilesFor } from '../src/adapters/index.js';
+import { TOOLS, getTool, ruleFilesFor, DEFAULT_TOOL_IDS } from '../src/adapters/index.js';
 import { commandNameFor, materialize } from '../src/adapters/skills.js';
 import { SKILL_SPECS } from '../src/templates/skills.js';
 import { AI_CONTRACT } from '../src/templates/contract.js';
@@ -138,6 +138,37 @@ test('REGRESSION no two sinks of one tool write the same skill into dirs Pi scan
     assert.equal(new Set(dirs).size, dirs.length, `${tool.id} writes the same sink twice`);
   }
   assert.ok(piDirs.includes('.pi/prompts'), 'prompt templates stay Pi-native');
+});
+
+test('REGRESSION dsh reads .dsh/skills too, so it gets only the shared .agents/skills carrier', () => {
+  // `dsh-skill-filesystem` scans project `.dsh/skills` (rank 100) *and* `.agents/skills`
+  // (rank 200) and keeps the first candidate of a duplicated name with a warning. Adding a
+  // `.dsh/skills` sink would therefore shadow the portable carrier — the same class of bug that
+  // retired `.pi/skills`. The project instruction file is AGENTS.md via dsh-agent-instructions.
+  const dsh = getTool('dsh');
+  assert.ok(dsh, 'dsh must be a supported tool');
+  assert.deepEqual(
+    dsh.ruleFiles.map((f) => f.path),
+    ['AGENTS.md'],
+    'dsh-agent-instructions loads the AGENTS.md chain',
+  );
+  const dirs = dsh.skillSinks.map((s) => s.dir);
+  assert.deepEqual(dirs, ['.agents/skills']);
+  assert.ok(!dirs.includes('.dsh/skills'), 'the shadowing sink must not exist');
+  assert.equal((dsh.skillSinks[0] as { invoke?: string }).invoke, 'plain', 'dsh is invoked as /name');
+  assert.ok(
+    !/RETIRED_SINK_DIRS[\s\S]*?'\.dsh\/skills'/.test(dsh.styleGuide),
+    'no stale pointer at a retired sink dir',
+  );
+});
+
+test('dsh is part of the default tool set, so `init` wires it without --tools', () => {
+  assert.ok(DEFAULT_TOOL_IDS.includes('dsh'));
+  const files = ruleFilesFor([...DEFAULT_TOOL_IDS]);
+  assert.deepEqual(
+    files.map((f) => f.def.path),
+    ['AGENTS.md', 'CLAUDE.md', '.cursor/rules/engram-memory.mdc'],
+  );
 });
 
 test('REGRESSION the ARGUMENTS placeholder does not rewrite its own documentation', () => {

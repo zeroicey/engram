@@ -13,7 +13,9 @@
     "codex",
     "pi",
     "windsurf",
-    "scaffold"
+    "scaffold",
+    "deepseek-harness",
+    "dsh"
   ],
   "license": "MIT",
   "type": "module",

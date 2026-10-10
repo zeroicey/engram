@@ -88,12 +88,15 @@ what makes the whole pipeline testable in memory.
 - **No editor-side integration yet.** `dump` is pasted manually; a Claude Code hook or Pi extension
   that injects it automatically is the obvious next layer, and is deliberately out of v0.1.
 - **Adapters encode each tool's conventions as of writing, and those conventions move.** Cursor
-  `.mdc`, Windsurf triggers and Copilot `applyTo` all change; a review already found six stale or
-  invented claims. Vendor knowledge lives in **two** places by design, and both must change
-  together: the tool record (paths, skill sinks, style guide) in `TOOLS` in
-  `src/adapters/index.ts`, and the frontmatter dialect in `frontmatterFor()` in
+  `.mdc`, Windsurf triggers, Copilot `applyTo` and the agent skill-root ranks (`dsh` reads
+  `.dsh/skills` before `.agents/skills`; Pi reads `.pi/skills` and `.agents/skills`) all change; a
+  review already found six stale or invented claims. Vendor knowledge lives in **two** places by
+  design, and both must change together: the tool record (paths, skill sinks, style guide) in
+  `TOOLS` in `src/adapters/index.ts`, and the frontmatter dialect in `frontmatterFor()` in
   `src/adapters/rules.ts`. `test/architecture.test.ts` fails if this section stops naming both.
-  `engram tools` prints the inventory.
+  `engram tools` prints the inventory. A new adapter shares a carrier dir rather than adding one
+  whenever its agent already scans a dir engram writes — see
+  `.ai/decisions/2026-10-10-dsh-adapter-shared-agent-skills.md`.
 - **Vendor facts are not machine-checkable.** Each claim was verified against vendor docs by hand
   during review; nothing re-verifies them, so they rot silently. A scheduled re-check (or an
   `/audit` step that re-reads the docs) is a candidate for a later version.

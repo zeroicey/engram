@@ -252,9 +252,44 @@ export const TOOLS: ToolDef[] = [
 - Skills live in the shared \`.agents/skills/\` dir; Pi reads that alongside \`.pi/skills/\`, so never add a second copy of the same skill name under \`.pi/skills/\`.
 - Project trust gates project resources (\`.agents/skills/\`, \`.pi/prompts/\`); mention this to humans, not to the model.`,
   },
+  {
+    id: 'dsh',
+    label: 'DeepSeek Harness (dsh)',
+    detect: ['.dsh', 'AGENTS.md', 'CLAUDE.md'],
+    ruleFiles: [
+      {
+        path: 'AGENTS.md',
+        kind: 'agents',
+        note: 'dsh-agent-instructions loads the project AGENTS.md/CLAUDE.md chain from the repo root down to the session cwd.',
+      },
+    ],
+    skillSinks: [
+      // No `.dsh/skills` sink on purpose. `dsh-skill-filesystem` scans `.dsh/skills` (rank 100)
+      // *and* `.agents/skills` (rank 200) and keeps the first name it finds, so a second engram
+      // copy would shadow the portable one and warn on every session — the Pi `.pi/skills`
+      // collision, one provider later. `.agents/skills` is the dir engram already ships.
+      {
+        kind: 'agent-skills',
+        dir: '.agents/skills',
+        invoke: 'plain',
+        note: 'dsh scans `.agents/skills` (rank 200) for `<name>/SKILL.md`; the model loads a skill with the `skill` tool and a human invokes it as `/name`.',
+      },
+    ],
+    notes: [
+      'dsh loads `AGENTS.md`/`CLAUDE.md` from the repo root down to the session cwd; a `CLAUDE.md` byte-identical to `AGENTS.md` renders once, a distinct one loads in full alongside it — keep one, not both, if you want a single contract in context.',
+      'Skills resolve first-wins by root: project `.dsh/skills` (rank 100) outranks `.agents/skills` (rank 200). engram writes only `.agents/skills`, so a same-named skill you author under `.dsh/skills` shadows its carrier with a warning.',
+      'The workspace-instruction chain is refreshed on a successful filesystem call into a new directory and on session resume — no `@path` imports are interpreted, so pointers must name files and triggers.',
+      '`dsh-base` already enables instruction loading and skill discovery; a custom profile can drop either plugin, in which case only the `.ai/` contract fallback remains.',
+    ],
+    styleGuide: `- dsh loads \`AGENTS.md\` (then \`CLAUDE.md\`) from the repo root down to the session cwd under a byte budget (65,536 by default in \`dsh-base\`); keep the root file short and put depth in \`.ai/\`.
+- There is no \`@path\` import syntax: name the \`.ai/\` file and the trigger ("before changing architecture, read \`.ai/ARCHITECTURE.md\`") instead of importing it.
+- Skill frontmatter is strict: \`name\` must be kebab-case, \`description\` is required and is the whole routing signal the model sees; say what the skill does *and* when it applies.
+- Skills are discovered one level deep only — \`<name>/SKILL.md\` or \`<name>.md\` directly under a scanned root; never nest a skill deeper.
+- State the sandbox and approval model explicitly: which commands dsh may run unattended, which need a human, and what must never be committed.`,
+  },
 ];
 
-export const DEFAULT_TOOL_IDS = ['agents', 'claude', 'cursor', 'pi'] as const;
+export const DEFAULT_TOOL_IDS = ['agents', 'claude', 'cursor', 'pi', 'dsh'] as const;
 
 export function getTool(id: string): ToolDef | undefined {
   return TOOLS.find((t) => t.id === id);

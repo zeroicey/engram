@@ -1,8 +1,9 @@
 # engram
 
 **Portable project memory + scaffold for AI coding tools.**
-One memory bank (`.ai/`) that Claude Code, Codex, Pi, Cursor, Windsurf, Copilot and Gemini CLI all
-read and write — plus a ≤1.5 KB fingerprint so a new session starts warm instead of blank.
+One memory bank (`.ai/`) that Claude Code, Codex, Pi, DeepSeek Harness, Cursor, Windsurf, Copilot
+and Gemini CLI all read and write — plus a ≤1.5 KB fingerprint so a new session starts warm
+instead of blank.
 
 > Why: AI does not get dumber because reasoning degrades. It gets dumber because context drifts,
 > old decisions are forgotten, and the same trap is re-discovered every third session. `engram`
@@ -84,6 +85,7 @@ Flags: `--tools a,b,c`, `--all`, `--notes "team norms"`, `--force`, `--dry-run`,
 | `copilot` | `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md` | `.github/prompts/` |
 | `gemini` | `GEMINI.md` | `.gemini/commands/*.toml` |
 | `pi` | `AGENTS.md` | `.agents/skills/` (shared), `.pi/prompts/` |
+| `dsh` | `AGENTS.md` | `.agents/skills/` (shared with `agents`/`codex`/`pi`) |
 
 ## The two design problems, solved
 
@@ -95,7 +97,7 @@ talking to, containing your real project facts (stack, scripts, directories, exi
 `--notes`), the per-tool style rules and the section list to write. Your assistant writes the body;
 `engram sync` re-owns the contract. See `.ai/decisions/2026-10-01-contract-block-machine-owned.md`.
 
-**2. Skills must not be copy-pasted eight times.** `.ai/skills/<name>.md` is the single canonical
+**2. Skills must not be copy-pasted once per tool.** `.ai/skills/<name>.md` is the single canonical
 spec, with Agent-Skills-compatible frontmatter. Each tool declares a *sink*
 (`<name>/SKILL.md`, `$ARGUMENTS` slash command, Gemini `{{args}}` TOML) and `engram sync`
 materialises it, stamped `<!-- engram:generated -->`. Tools without native skills get the Layer-1

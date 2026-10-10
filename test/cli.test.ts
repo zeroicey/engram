@@ -53,7 +53,7 @@ test('unknown command exits 1', async () => {
 test('tools lists every adapter', async () => {
   const res = await run(['tools']);
   assert.equal(res.code, 0);
-  for (const id of ['agents', 'claude', 'cursor', 'pi', 'codex', 'copilot', 'gemini', 'windsurf']) {
+  for (const id of ['agents', 'claude', 'cursor', 'pi', 'codex', 'copilot', 'gemini', 'windsurf', 'dsh']) {
     assert.ok(res.out.includes(id), `tools omits ${id}`);
   }
 });
