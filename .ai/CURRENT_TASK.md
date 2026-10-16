@@ -1,6 +1,6 @@
 # Current task
 
-**Status:** 🟡 v0.4.0 built, not published · **Updated:** 2026-10-10
+**Status:** 🟡 v0.4.0 built, not published · **Updated:** 2026-10-16
 
 ## Goal
 
@@ -33,7 +33,7 @@ cannot hand-edit the machine-owned contract block.
 
 ## Code state
 
-Branch `main`. `src/` is 15 TypeScript modules, `test/` 8 suites, zero runtime deps. Build:
+Branch `main`. `src/` is 21 TypeScript modules, `test/` 8 suites, zero runtime deps. Build:
 `npm run build` → `build/`; tests run against compiled output on purpose. `engram dump` renders
 ~1.4 KB. Nine tool adapters: `agents`, `codex`, `claude`, `cursor`, `windsurf`, `copilot`, `gemini`,
 `pi`, `dsh`. Two new leaf modules this round: `src/core/sections.ts`, `src/core/skill-source.ts`.
