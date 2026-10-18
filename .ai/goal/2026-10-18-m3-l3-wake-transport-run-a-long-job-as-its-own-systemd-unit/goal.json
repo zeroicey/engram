@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "2026-10-18-m3-l3-wake-transport-run-a-long-job-as-its-own-systemd-unit",
+  "goal": "M3 L3 wake transport: run a long job as its own systemd unit and wake this goal from ExecStopPost",
+  "status": "done",
+  "baton": {
+    "sessionPath": "/home/oicey/.pi/agent/sessions/--data-dev-engram--/2026-10-18T13-12-00-248Z_01a14f23-f9f7-71ef-831a-b189141dda85.jsonl",
+    "paneId": "w13:p1",
+    "startedAt": "2026-10-18T13:28:46.705Z"
+  },
+  "createdAt": "2026-10-18T13:28:46.705Z",
+  "updatedAt": "2026-10-18T13:31:45.942Z",
+  "closedAt": "2026-10-18T13:31:45.942Z",
+  "closeReason": "completed",
+  "rounds": 0,
+  "reports": 2,
+  "wake": null,
+  "wakeSeq": 1,
+  "lastDigest": null,
+  "unchangedRounds": 0,
+  "unreportedSettles": 0,
+  "blocker": null,
+  "lastNote": "parked while the systemd unit runs",
+  "pendingVerdict": null,
+  "lastVerdict": {
+    "passed": true,
+    "detail": "1 command(s) exited 0",
+    "at": "2026-10-18T13:31:45.942Z"
+  },
+  "pendingHandoff": null,
+  "pendingWakes": []
+}
