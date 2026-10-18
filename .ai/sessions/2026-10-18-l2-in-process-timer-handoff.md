@@ -83,11 +83,13 @@ Also fixed on the way, both found by making the host consume effects for the fir
 
 ## Loose ends
 
-- [ ] **An adversarial review of this diff was launched at the end of the session and had not returned
-      when the commit was made.** The bank says a review asked to *break* the code finds what a probe
-      asked to *exercise* it does not (`.ai/pitfalls/cases/asymmetric-guards-and-leaked-effects.md`), and
-      this change is in exactly those two classes. Any finding is a follow-up commit; the two live
-      probes already produced the biggest one of the session.
+- [x] **The adversarial review of this diff.** It was launched as a subagent and **timed out after 30
+      minutes having produced one line** ("I'll start by reading the changed files") — no findings, no
+      partial diff, tree clean. It was redone by hand afterwards and **found a fourth defect of the same
+      class**: `/goal wake` released the latch and discarded the message its own claim returned, so the
+      wait was consumed and no run started (probed against the CLI, then fixed and verified live in RPC
+      mode). The structural guard is `EFFECT_DISPOSITIONS` in `core/goal-host.ts`. Recorded here because
+      "a review was requested" and "a review happened" are not the same claim.
 - [ ] **Run one real multi-hour goal** — still the largest untested assumption in the design (the
       commit-at-settlement rule, the traceability promise, the liveness deadline). Now cheap to try: a
       goal whose only work is a `wait` of 30–60 minutes.
@@ -105,6 +107,13 @@ Also fixed on the way, both found by making the host consume effects for the fir
 - **Do not consume a wake before delivering it.** `poll` peeks, `wake` claims, `runGoalWake` delivers
   before it writes. If a delivery fails after the consumption, the goal is `running` with nothing to
   re-arm it and the 24h deadline does not look at it.
+- **Do not send a claim whose message you drop.** A `wake` releases the latch, so its `message` is the
+  delivery. `/goal wake` did exactly this: consumed the wait, started no run. Every call site that can
+  receive a `message` must deliver it, and `EFFECT_DISPOSITIONS` exists so a new effect cannot be
+  unassigned.
+- **Do not trust a subagent review that timed out.** A `reviewer` run returned one line after 30 minutes;
+  the findings that mattered came from a hand-built probe against the CLI. Check the artifact, not the
+  launch receipt.
 - **Do not retry a failed delivery.** A stale extension runtime never becomes live again, and a pending
   `setTimeout` holds the whole process open: a 24h wait would have spun a spawn per second for a day.
 - **Do not trust a comment that claims a guarantee.** L3's `deliverNudge` doc said "the token stays

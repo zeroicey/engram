@@ -55,19 +55,38 @@ Three sub-shapes, all fixed:
 - `runGoalWake` delivers first and writes the record only when the delivery succeeded, and a failed
   delivery is now exit 1 with `still waiting — the wake was not consumed`.
 
+## The same class, found by an adversarial pass afterwards: a claim whose message nobody read
+
+`/goal wake` — the human escape hatch, and the only `wake` the *extension* can send — called
+`event("wake", …)` and **threw away `res.message`**. A claim releases the latch, so its message *is*
+the delivery; dropping it consumed the wait and told nobody, leaving a `running` goal with nothing
+watching it (only `waiting` has a liveness deadline). Probed directly against the CLI: `waiting
+wake-1` → hand-driven `event --type wake` → `running`, `wake: null`, message discarded.
+
+The generic form is the lesson: **an effect the host must act on, with no assignment anywhere, is
+silently a no-op.** Three of the four findings in this file are that shape (`ignore` unread,
+`wake-ready` would have been, `res.message` dropped).
+
 ## Guard
 
 - `test/goal-extension.test.ts` — a `sendMessage` that throws (a stub runtime): the record must still
   be `waiting` with a latched token, exactly one delivery attempt must have happened, and a **fresh**
   extension instance must recover it. The throw is real (not a mocked return), so an unguarded call
   fails the test run rather than passing quietly.
+- `test/goal-extension.test.ts` — `/goal wake delivers the engine message`: the command handler must
+  produce a `triggerTurn` message and leave the record `running` with no token.
+- `EFFECT_DISPOSITIONS` in `core/goal-host.ts` assigns **every** `GoalEffect` kind to a disposition
+  (`host-action` / `cli-internal` / `informational`), so a new effect kind does not compile until
+  someone decides who acts on it; `HOST_ACTION_EFFECTS` then drives a test that asserts the generated
+  source names each one. That is the structural fix for the class, rather than a fourth reminder.
 - `test/goal-unit.test.ts` — "unreachable herdr leaves the wait latched, so the wake can still be
   delivered": asserts `waiting` + the token, then retries and asserts the delivery and the transition.
 - `test/goal.test.ts` — a satisfied `poll` asserts `status: waiting` and a `wake-ready` effect; the
   claim is a separate step.
 - Live, this session: print mode → no crash, no hang, latch intact, process exits ~1s after the fire;
   RPC mode (a pi process that stays alive) → `agent_start #2` 2s after the plan and `wake: null`, i.e.
-  the timer really started a new run in a live session.
+  the timer really started a new run in a live session; and `/goal wake` in RPC mode → one run, latch
+  released (before the fix: latch released, no run).
 - **Ask of any future transport:** *if delivery fails here, what still knows the goal is waiting?* If
   the answer is "nothing", the consume step is in the wrong place. And treat a comment that claims a
   guarantee as unverified until a test fails without it — the L3 comment asserted this exact property

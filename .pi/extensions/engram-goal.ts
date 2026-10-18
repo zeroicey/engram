@@ -114,6 +114,22 @@ function safeNotify(pi, text) {
   }
 }
 
+/**
+ * The same guard for a message that starts a run — the one that carries the engine's wake.
+ *
+ * Returns whether it was accepted, because the caller has to decide whether the claim may follow: a
+ * wake whose message did not arrive must not release the latch.
+ */
+function safeSend(pi, content, options) {
+  try {
+    pi.sendMessage({ customType: "engram-goal", content, display: true }, options);
+    return true;
+  } catch (e) {
+    safeNotify(pi, "engram-goal: the wake could not be delivered, so the wait is still latched.");
+    return false;
+  }
+}
+
 let warned = false;
 
 export default function (pi) {
@@ -215,12 +231,7 @@ export default function (pi) {
     // consuming first would release the latch for a message nobody ever saw, leaving a 'running' goal
     // that nothing was watching.
     function deliver(ready) {
-      try {
-        pi.sendMessage(
-          { customType: "engram-goal", content: ready.message, display: true },
-          { triggerTurn: true },
-        );
-      } catch (e) {
+      if (!safeSend(pi, ready.message, { triggerTurn: true })) {
         // Nothing was delivered, so nothing is claimed: the wait stays latched, so the next
         // 'session_start' reconciles and re-arms it, and the liveness deadline still covers it.
         //
@@ -229,7 +240,6 @@ export default function (pi) {
         // retry would be a hop that always fails, and because a pending 'setTimeout' keeps node's event
         // loop alive it would also hold a *shutting-down* process open for as long as the deadline.
         // Measured: a '--print' session with a 24h wait would have spun a spawn per second for a day.
-        safeNotify(pi, "engram-goal: the wake could not be delivered, so the wait is still latched.");
         return;
       }
       // Delivered. The claim is what releases the latch, and it carries this pane's identity so a pane
@@ -362,9 +372,16 @@ export default function (pi) {
         // The JSON channel, not the 'wake' verb: 'goal wake' prints human lines, so 'call()' — which
         // needs a line starting with '{' — returned null and told the human the wake failed *after*
         // it had already succeeded.
+        const session = identity(ctx);
         const res = event("wake", ["--reason", reason], ctx);
+        // The wake is a *claim*: it releases the latch, so the message it returns IS the delivery.
+        // Dropping it was a lost wake with nobody to blame — a human typing '/goal wake' consumed the
+        // wait and the model was never told, leaving a 'running' goal that nothing watches (only
+        // 'waiting' has a liveness deadline). 'triggerTurn' is right here too: the goal was parked, and
+        // this pane just asked for it to move.
+        if (res && res.message) safeSend(pi, res.message, { triggerTurn: true });
         ctx.ui.notify(res ? res.notify || res.reason || "goal woken" : "engram goal wake failed", "info");
-        applyEffects(res, identity(ctx));
+        applyEffects(res, session);
         return;
       }
       const res = event("status", [], ctx);

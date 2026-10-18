@@ -194,6 +194,46 @@ export function responseFromEffects(
   };
 }
 
+/**
+ * Who acts on each effect.
+ *
+ * The generated extension can only ever *see* an effect list; it cannot import this file, so nothing
+ * forced it to have an opinion about a new kind. That is how a real defect shipped twice:
+ * `responseFromEffects` ignored `ignore`, and the `/goal wake` handler dropped the `message` that its
+ * own claim returned — both cases of an effect nobody was assigned to.
+ *
+ * So the disposition is declared here, `Record<GoalEffect['kind'], …>` makes it **exhaustive at compile
+ * time** (a new kind does not build until someone decides), and `test/goal-extension.test.ts` asserts the
+ * generated source names every `host-action` one. The alternative — a comment saying "remember to update
+ * the adapter" — is a promise, and this codebase has been bitten by exactly that.
+ *
+ * - `host-action`: the extension must do something. A `wake-ready` that is not delivered, or a
+ *   `clear-wake` that is not cancelled, is a bug with no other symptom.
+ * - `cli-internal`: resolved inside `runGoalEvent` before the response is built, so a host that sees one
+ *   is looking at a stale answer.
+ * - `informational`: for a human or a log. A host may ignore it, and `responseFromEffects` is where a
+ *   message becomes `message`/`notify`.
+ */
+export type EffectDisposition = 'host-action' | 'cli-internal' | 'informational';
+
+export const EFFECT_DISPOSITIONS: Record<GoalEffect['kind'], EffectDisposition> = {
+  nudge: 'host-action',
+  escalate: 'host-action',
+  'clear-wake': 'host-action',
+  'schedule-wake': 'host-action',
+  'wake-ready': 'host-action',
+  handoff: 'host-action',
+  evaluate: 'cli-internal',
+  silent: 'informational',
+  ignore: 'informational',
+  'done-observed': 'informational',
+};
+
+/** Every effect the generated extension is required to have an opinion about. */
+export const HOST_ACTION_EFFECTS = Object.entries(EFFECT_DISPOSITIONS)
+  .filter(([, disposition]) => disposition === 'host-action')
+  .map(([kind]) => kind);
+
 // Both symbols that used to live here are gone on purpose, and their absence is the record.
 //
 // - `describeVerdict(passed, detail)` was never called: the real notify text is built inline in

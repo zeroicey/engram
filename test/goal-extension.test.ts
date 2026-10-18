@@ -4,7 +4,13 @@ import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseReportArgs, responseFromEffects, idleResponse } from '../src/core/goal-host.js';
+import {
+  EFFECT_DISPOSITIONS,
+  HOST_ACTION_EFFECTS,
+  parseReportArgs,
+  responseFromEffects,
+  idleResponse,
+} from '../src/core/goal-host.js';
 import { goalExtensionSource, GOAL_EXTENSION_PATH } from '../src/templates/goal-extension.js';
 import { newGoalRecord, type GoalEffect } from '../src/core/goal.js';
 import { runCli, sandbox, seedBank } from './helpers.js';
@@ -142,6 +148,34 @@ test('the extension carries no rule of its own', () => {
   // It must also never pass a shell string: one argv array per call.
   assert.match(src, /spawnSync\(ENGRAM, args,/);
   assert.ok(!src.includes('execSync'), 'no shell-string execution');
+});
+
+test('the generated extension has an opinion about every effect the engine can emit', () => {
+  // The defect this exists for: the extension could only ever *see* an effect list, so nothing forced it
+  // to handle a new kind — and two real bugs shipped from that gap (`responseFromEffects` ignoring
+  // `ignore`, and `/goal wake` dropping the message its own claim returned). The disposition table is
+  // exhaustive at compile time; this asserts the generated source agrees with it.
+  const src = goalExtensionSource({ engramBin: 'engram', version: '0.5.0' });
+  // `nudge` is the continuation: the extension never names it because it applies the *answer*
+  // (`res.continue` + `res.message`), which `agent_before_settle` consumes. That is a real exception
+  // rather than a gap, so it is stated here instead of being silently skipped by the loop.
+  const viaResponse = new Set(['nudge', 'escalate', 'handoff', 'done-observed']);
+  for (const kind of HOST_ACTION_EFFECTS) {
+    if (viaResponse.has(kind)) {
+      assert.match(src, /res\.continue|res\.notify|handoff requested/, `"${kind}" must reach the host`);
+      continue;
+    }
+    assert.ok(
+      src.includes(`"${kind}"`),
+      `the host is declared responsible for "${kind}" but the generated extension never names it`,
+    );
+  }
+  // And the reverse direction: a kind marked informational must not be acted on as if it were an
+  // instruction. `ignore` in particular is a *refusal* — handling it as a wake is the bug that made a
+  // refused poll look like success.
+  assert.equal(EFFECT_DISPOSITIONS['evaluate'], 'cli-internal', 'the CLI resolves it before answering');
+  assert.equal(EFFECT_DISPOSITIONS.ignore, 'informational');
+  assert.equal(EFFECT_DISPOSITIONS['wake-ready'], 'host-action', 'a peek nobody delivers is a lost wake');
 });
 
 test('the extension maps every lifecycle event the engine expects', () => {
@@ -465,6 +499,7 @@ async function loadExtension(
   handlers: Map<string, (event?: unknown, ctx?: unknown) => unknown>;
   messages: { content: string; triggerTurn: boolean }[];
   report: (params: Record<string, unknown>) => Promise<unknown>;
+  goal: (args: string) => Promise<void>;
   ctx: Record<string, unknown>;
 }> {
   const cli = new URL('../src/cli.js', import.meta.url).pathname;
@@ -481,6 +516,7 @@ async function loadExtension(
   const handlers = new Map<string, (event?: unknown, ctx?: unknown) => unknown>();
   const messages: { content: string; triggerTurn: boolean }[] = [];
   let tool: { execute: (id: string, params: Record<string, unknown>, s: unknown, u: unknown, ctx: unknown) => Promise<unknown> } | null = null;
+  let command: { handler: (args: string, ctx: unknown) => Promise<void> } | null = null;
   const ctx = {
     sessionManager: { getSessionFile: () => session },
     ui: { notify: () => {} },
@@ -490,7 +526,9 @@ async function loadExtension(
     on(hook: string, fn: (event?: unknown, ctx?: unknown) => unknown) {
       handlers.set(hook, fn);
     },
-    registerCommand() {},
+    registerCommand(_name: string, def: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+      command = def;
+    },
     registerTool(def: typeof tool) {
       tool = def;
     },
@@ -506,11 +544,13 @@ async function loadExtension(
     },
   });
   assert.ok(tool !== null, 'the tool must be registered');
+  assert.ok(command !== null, 'the human needs /goal');
   return {
     handlers,
     messages,
     ctx,
     report: (params: Record<string, unknown>) => (tool as NonNullable<typeof tool>).execute('id', params, undefined, undefined, ctx),
+    goal: (args: string) => (command as NonNullable<typeof command>).handler(args, ctx),
   };
 }
 
@@ -664,6 +704,33 @@ test('a wake that cannot be delivered is not claimed, and the next session recov
     assert.equal((await status()).status, 'running');
     assert.equal((await status()).wake, null);
     assert.equal(fresh.messages.filter((m) => m.triggerTurn).length, 1);
+  } finally {
+    await sb.cleanup();
+  }
+});
+
+test('/goal wake delivers the engine message, because the claim releases the latch', async () => {
+  const sb = await sandbox('engram-goal-command-wake-');
+  try {
+    await seedBank(sb);
+    await run(['goal', 'new', 'human escape hatch', '--cmd', 'true', '--root', sb.root]);
+    const ext = await loadExtension(sb, '/sessions/timer.jsonl');
+    const id = (await sb.list('.ai/goal'))[0] ?? '';
+    const status = async (): Promise<{ status: string; wake: unknown }> =>
+      JSON.parse(await sb.read(`.ai/goal/${id}/goal.json`)) as { status: string; wake: unknown };
+
+    await ext.report({ status: 'wait', wakeOnType: 'time', wakeOnSeconds: 3600 });
+    assert.equal((await status()).status, 'waiting');
+
+    // The human escape hatch. `event --type wake` is a *claim*: it releases the latch, so the message it
+    // returns IS the delivery. This handler used to throw it away — a wake consumed with nobody told,
+    // and the goal left `running` and parked forever, because `waiting` is the only state with a deadline.
+    await ext.goal('wake a human said go');
+    const fired = ext.messages.filter((m) => m.triggerTurn);
+    assert.equal(fired.length, 1, 'the model must be told the goal was woken');
+    assert.match(fired[0]?.content ?? '', /Wake: a human said go/);
+    assert.equal((await status()).status, 'running');
+    assert.equal((await status()).wake, null);
   } finally {
     await sb.cleanup();
   }
