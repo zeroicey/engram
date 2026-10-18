@@ -20,6 +20,7 @@ import {
   runGoalHandoff,
 } from './commands/goal.js';
 import { parseDoneWhen } from './core/goal-store.js';
+import { DEFAULT_LIMITS } from './core/goal.js';
 import type { DoneWhen, MetricOp } from './core/goal.js';
 import { readSections } from './core/sections.js';
 import { readConfig, setGoalEnabled } from './core/config.js';
@@ -144,6 +145,7 @@ GOAL VERBS
 
 CONFIG OPTIONS
   --goal on|off      opt into the goal engine (writes .pi/extensions/engram-goal.ts on sync)
+  --limits           show the engine limits in effect (defaults, overridden by .engram/config.json)
   --json             print the recorded config
 
 SUPPORTED TOOLS
@@ -505,6 +507,19 @@ async function cmdConfig(root: string, args: Args): Promise<number> {
   }
 
   const config = await readConfig(root);
+  if (flag(args.flags, 'limits')) {
+    // `limits` lives in the config file and is read by every `reduce`, so a project can tune the
+    // liveness deadline (the waiting decision promised "default 24h, configurable"). Printed as the
+    // effective values, because a half-filled block is the normal case.
+    const effective = { ...DEFAULT_LIMITS, ...(config?.limits ?? {}) };
+    const source = config?.limits ? '.engram/config.json' : 'defaults';
+    for (const [key, value] of Object.entries(effective)) {
+      const overridden = config?.limits && key in config.limits ? ' (configured)' : '';
+      console.log(`${key.padEnd(16)} ${value}${key === 'livenessMs' ? ' ms' : ''}${overridden}`);
+    }
+    console.log(`source: ${source}`);
+    return 0;
+  }
   if (config === null) {
     console.error('no .engram/config.json yet — run `engram init` first');
     return 1;

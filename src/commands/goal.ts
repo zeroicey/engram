@@ -55,16 +55,19 @@ import {
 } from '../core/goal-store.js';
 import { goalBrief, goalTasks } from '../templates/goal-files.js';
 import {
+  DEFAULT_LIMITS,
   newGoalRecord,
   reduce,
   type DoneWhen,
   type GoalEffect,
   type GoalEvent,
+  type GoalLimits,
   type GoalRecord,
   type GoalReport,
   type WakeCondition,
 } from '../core/goal.js';
 import { idleResponse, responseFromEffects, type GoalResponse } from '../core/goal-host.js';
+import { readConfig } from '../core/config.js';
 
 export interface GoalCliResult {
   exitCode: number;
@@ -266,6 +269,7 @@ export async function runGoalCheck(
   const step = reduce(
     { record: read.record, brief },
     { kind: 'verdict', now: new Date().toISOString(), passed: verdict.passed, detail: verdict.detail, digest },
+    await limitsFor(root),
   );
   await writeGoalRecord(root, step.record);
 
@@ -412,6 +416,7 @@ export async function runGoalWake(opts: GoalWakeOptions): Promise<GoalCliResult>
   const step = reduce(
     { record: active.record, brief: await readGoalBrief(opts.root, active.id) },
     { kind: 'wake', now: new Date().toISOString(), token, reason },
+    await limitsFor(opts.root),
   );
 
   if (step.record === active.record) {
@@ -462,6 +467,7 @@ export async function runGoalClose(root: string, reason: 'cancelled' | 'abandone
   const step = reduce(
     { record: read.record, brief: await readGoalBrief(root, target) },
     { kind: 'close', now: new Date().toISOString(), reason },
+    await limitsFor(root),
   );
   if (step.record === read.record) return ok([`${target} is already closed`]);
   await writeGoalRecord(root, step.record);
@@ -944,9 +950,26 @@ export async function runGoalReport(
       digest: opts.digest ?? null,
       ...(opts.sessionPath ? { sessionPath: opts.sessionPath } : {}),
     },
+    await limitsFor(root),
   );
   await writeGoalRecord(root, step.record);
   return { exitCode: 0, lines: [`${active.id}: ${step.record.status}`], warnings: [], record: step.record, effects: step.effects };
+}
+
+/**
+ * The engine limits this project asked for, over the defaults.
+ *
+ * One reader, called at every `reduce`, because a limit applied on some transitions and not others is
+ * the asymmetric-guard shape that has already cost this codebase three bugs: `livenessMs` read in one
+ * branch and defaulted in another means a wait expires on one path and never on the next. The waiting
+ * decision promised "default 24h, configurable"; until this existed the config key was not read at all.
+ *
+ * A missing or unreadable config is the default, never an error: the limits are a tuning knob, and
+ * refusing to report a goal because a number is malformed would trade a working engine for a strict one.
+ */
+async function limitsFor(root: string): Promise<GoalLimits> {
+  const config = await readConfig(root);
+  return { ...DEFAULT_LIMITS, ...(config?.limits ?? {}) };
 }
 
 // ---------------------------------------------------------------- the host wire surface
@@ -1103,7 +1126,8 @@ export async function runGoalEvent(
       return idleResponse(`unknown goal event "${input.event}"`);
   }
 
-  const step = reduce(view, event);
+  const limits = await limitsFor(root);
+  const step = reduce(view, event, limits);
   let record = step.record;
   let effects = step.effects;
 
@@ -1120,6 +1144,7 @@ export async function runGoalEvent(
     const verdictStep = reduce(
       { record, brief },
       { kind: 'verdict', now, passed: verdict.passed, detail: verdict.detail, digest },
+      limits,
     );
     record = verdictStep.record;
     // The verdict effects replace the evaluate effect: the caller needs "what happens now", not

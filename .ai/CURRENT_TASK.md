@@ -118,6 +118,12 @@ is what lets a project like `research` own its own partitions while this is buil
       `deliver: delivered to w13:p1` → the wake arrived in the holder's pane as a real turn → a `done`
       report closed the goal on a verdict the engine ran itself (`npm test`, 1 command exited 0). The
       closed record is committed under `.ai/goal/2026-10-18-m3-l3-wake-transport-…/`
+- [x] **2026-10-18 the liveness deadline is finally configurable.** The waiting decision said "default
+      24h **configurable**" and nothing read a number: every `reduce` used `DEFAULT_LIMITS`. `.engram/config.json`
+      now carries an optional `limits` block (`livenessMs`, `stuckRounds`, `blockedRepeats`,
+      `silentSettles`), validated per field, read once per transition (`limitsFor`), shown by
+      `engram config --limits`. `setGoalEnabled` no longer rewrites the whole document, which would have
+      deleted a project's tuned deadline on every `--goal on|off`.
 - [x] **2026-10-18 this repo dogfoods the loop it builds**: `.engram/config.json` has
       `goal.enabled`, `.pi/extensions/engram-goal.ts` is committed, and the live run above was driven
       through the real CLI

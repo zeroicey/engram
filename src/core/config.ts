@@ -24,6 +24,43 @@ export interface EngramConfig {
    * separate from tool support, which is not a choice any more.
    */
   goal?: { enabled: boolean };
+  /**
+   * Engine limits, when the project needs different ones from the defaults.
+   *
+   * The waiting decision says the liveness deadline is "default 24h, **configurable**", and until this
+   * existed it was not: every call to `reduce` used `DEFAULT_LIMITS`, so the number was a constant with
+   * a decision pointing at it. A day is the right default for a real training run and the wrong one for
+   * anything that wants to notice a dead wait sooner — and it is not testable at all without waiting a
+   * day.
+   *
+   * Only fields that are present are applied, so a project that sets one keeps the default for the
+   * rest. Every value is validated: a negative or non-finite number is dropped rather than used, because
+   * `livenessMs: 0` would make every wait expire instantly and `NaN` would make none expire.
+   */
+  limits?: Partial<Record<LimitKey, number>>;
+}
+
+/** The knobs `GoalLimits` exposes, named here so `config` does not depend on `core/goal.ts`'s type. */
+export type LimitKey = 'livenessMs' | 'stuckRounds' | 'blockedRepeats' | 'silentSettles';
+
+const LIMIT_KEYS: LimitKey[] = ['livenessMs', 'stuckRounds', 'blockedRepeats', 'silentSettles'];
+
+/**
+ * The `limits` block, filtered to values that can be used.
+ *
+ * Returns `undefined` when nothing valid is left, so an empty or nonsense block does not look like a
+ * deliberate configuration.
+ */
+function parseLimits(raw: unknown): EngramConfig['limits'] | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const out: Partial<Record<LimitKey, number>> = {};
+  for (const key of LIMIT_KEYS) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
+    // Counts are counts: a fractional `stuckRounds` would compare `2.5 >= 2.5` and fire one round late.
+    out[key] = key === 'livenessMs' ? value : Math.floor(value);
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 export const CONFIG_PATH = '.engram/config.json';
@@ -42,9 +79,10 @@ function parseConfig(raw: string | null): EngramConfig | null {
       typeof goalRaw === 'object' && goalRaw !== null && (goalRaw as { enabled?: unknown }).enabled === true
         ? { enabled: true }
         : { enabled: false };
+    const limits = parseLimits((parsed as { limits?: unknown }).limits);
     // A v1 file is accepted as-is: `tools` carries no information a Pi-only engram can use, and
     // refusing the file would also drop the `goal` opt-in next to it.
-    return { version: 2, goal };
+    return { version: 2, goal, ...(limits ? { limits } : {}) };
   } catch {
     // A hand-edited or truncated config must never break sync; it only costs the goal opt-in.
     return null;
@@ -60,8 +98,24 @@ export async function readConfig(root: string): Promise<EngramConfig | null> {
   return parseConfig(await readFileSafe(path.join(root, CONFIG_PATH)));
 }
 
-export async function writeConfig(root: string, goal = false): Promise<void> {
-  const payload: EngramConfig = { version: 2, ...(goal ? { goal: { enabled: true } } : {}) };
+/**
+ * Write the config, preserving the limits block.
+ *
+ * The old signature was `writeConfig(root, goal)`, and it *replaced* the whole document — which was
+ * harmless while the opt-in was the only key. With `limits` in the file, toggling the goal would have
+ * silently deleted a project's tuned liveness deadline: a write that drops a field it does not own is
+ * the same shape as the `clear-wake` leaks, one layer down.
+ */
+export async function writeConfig(
+  root: string,
+  goal = false,
+  limits?: EngramConfig['limits'],
+): Promise<void> {
+  const payload: EngramConfig = {
+    version: 2,
+    ...(goal ? { goal: { enabled: true } } : {}),
+    ...(limits ? { limits } : {}),
+  };
   await writeFile(path.join(root, CONFIG_PATH), `${JSON.stringify(payload, null, 2)}\n`);
 }
 
@@ -86,7 +140,8 @@ export async function isLegacyConfig(root: string): Promise<boolean> {
   }
 }
 
-/** Flip the goal opt-in, preserving nothing else — there is nothing else. */
+/** Flip the goal opt-in, preserving the limits block it does not own. */
 export async function setGoalEnabled(root: string, enabled: boolean): Promise<void> {
-  await writeConfig(root, enabled);
+  const existing = await readConfig(root);
+  await writeConfig(root, enabled, existing?.limits);
 }
