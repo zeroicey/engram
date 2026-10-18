@@ -81,11 +81,19 @@ the verdict: *an in-process timer, so a time wait of minutes needs no systemd un
   nothing to install. L3 keeps its job: the 16-hour job that must outlive the pane — and it now shares
   the delivery-then-claim ordering, so a herdr failure leaves the wait latched for the next attempt
   instead of ending it.
-- **Verified live**, not only in tests: in RPC mode (a pi process that stays alive across runs) a
-  12-second wait produced `agent_start #2` two seconds after its plan with `wake: null` — the timer
-  started a real run in a live session. In `--print` mode the runtime is already stale when the timer
-  fires, which is where the unguarded delivery used to kill the process; it now leaves the latch and
-  the process exits cleanly.
+- **Verified live, not only in tests**, three ways:
+  1. **RPC mode** (a pi process that stays alive across runs): a 12-second wait produced `agent_start #2`
+     two seconds after its plan with `wake: null` — the timer started a real run in a live session.
+  2. **`--print` mode**: the runtime is already stale when the timer fires, which is where the unguarded
+     delivery used to kill the process; it now leaves the latch and the process exits cleanly.
+  3. **A real interactive session in a real herdr window, working a real repo** (the first probe): a
+     90-second wait was latched by the model, the timer fired, the session was woken, satisfied its relay
+     and closed on an observed verdict — commit timeline `02:08:42 → 02:10:34` around a wait latched at
+     `02:08:46`. That is the shape the transport exists for, end to end, with no test doubles.
+- **A long run cannot be produced by making the work bigger.** Two probes whose work was genuinely larger
+  finished in one turn; only the one whose gate was unsatisfiable until a wait had elapsed needed the
+  timer. The gate is the design surface, not the workload — see
+  `.ai/pitfalls/cases/a-long-run-cannot-be-produced-by-making-the-work-bigger.md`.
 - `node:fs` stays out of `templates/`; the only machine-reading code added is in `commands/goal.ts`,
   next to every other declared path.
 - The generated extension is the only place a timer can live, so a wake is re-armed by

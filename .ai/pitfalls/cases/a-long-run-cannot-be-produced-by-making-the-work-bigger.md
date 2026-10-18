@@ -51,10 +51,35 @@ claims that session as the holder** — a goal meant for a successor then refuse
 turn. Both B and C hit this and needed a corrected baton. That is the baton rule working, not failing;
 the probe script has to clear the baton (or pass `--session`) when it creates a goal for another window.
 
+## The enlarged run, and the mistake it caught in my own probe
+
+A fourth probe scaled the shape up: **three legs, two real timed waits of 120 s each, and a gate of
+`npm test && node scripts/legs.js --require 3`**, so the goal could not close until every leg had left a
+`LEGn-OK` marker. Result: `waiting` (`wake-1`) → timer fired → leg 2 → `waiting` (`wake-2`) → timer fired
+→ leg 3 → `done` on **`2 command(s) exited 0`**. Two consecutive real timers in one live session, three
+commits separated by two ~2-minute gaps, 15 tests.
+
+The first attempt at that probe was **wrong in an instructive way**: the relay guard lived in the
+carrier's `agent_before_settle` hook. **That hook never sees a `done` report.** `goal_report(status=done)`
+is a tool call whose verdict the engine runs; `agent_before_settle` fires when a *run settles*, and the
+model went from leg 2's wait straight to leg 3 and a `done` claim without ever settling empty. So the goal
+closed while the guard's condition was unsatisfiable — and worse, the guard's condition could never be
+satisfied because the skill never told the model to write the file the guard read.
+
+Two lessons, and the first is a rule:
+
+- **A project rule binds only in `done_when`.** The carrier is engram's code and `sync` owns it; the gate
+  is the project's, and the engine runs it. Anything a project wants enforced goes in the gate (or a
+  `checklist` with evidence), never in a hook — a hook can be bypassed by the model simply not settling.
+- **A guard whose input the instructions never mention is dead on arrival.** Ask of any check: *is
+  producing its input part of the task the model was given?*
+
 ## Guard / how to do it again
 
-- A real long-run test is a repo whose `npm test` gate is only satisfiable after a wait plus a second
-  turn — probe C's `duration-relay` skill is the smallest working example (35 lines).
+- A real long-run test is a repo whose **gate** is only satisfiable after a wait plus a second turn —
+  the three-leg probe is the working example: `npm test && node scripts/legs.js --require 3`, a skill
+  that tells the model to append `LEGn-OK` after each leg, and a `wakeOnSeconds` between them. Note the
+  gate, not a hook, and note that the skill has to name the marker file or the gate can never pass.
 - Never launch the successor with `herdr agent start` without `--approve` for a directory pi has not seen.
 - Close every probe window and delete every probe repo; a probe that leaves state behind costs the next
   person an hour of "which of these is real".

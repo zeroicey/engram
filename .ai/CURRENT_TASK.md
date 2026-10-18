@@ -246,7 +246,11 @@ other's type.
 Next action, in order:
 
 1. **A real hour-long unattended run is still the untested thing — but the shape of the test is now
-   known.** Three real probes (real pi in a real herdr window, real repo, real `npm test` gate) ran the
+   known, and a two-wait version has passed.** Probe D: three legs, two real 120 s waits, gate
+   `npm test && node scripts/legs.js --require 3` → `wake-1` → woken → `wake-2` → woken → `done` on
+   `2 command(s) exited 0`, 15 tests, three commits across two ~2-minute gaps. What is left is *duration*,
+   not shape: scale `wakeOnSeconds` up and see whether anything breaks when a wait is longer than a
+   session's patience (memory, herdr, a pi restart mid-wait). Three real probes (real pi in a real herdr window, real repo, real `npm test` gate) ran the
    whole loop end to end: A and B finished in one turn, C waited 90 s on a real L2 timer, was woken, and
    closed on an observed verdict. The lesson: **a long run cannot be produced by making the work bigger**
    — it needs a gate that is unsatisfiable until something outside the session changes, and an explicit
