@@ -109,6 +109,9 @@ test('the successor opens as a tab, not a split, and the tab names its goal', ()
     '--no-focus',
   ]);
   assert.deepEqual(herdrPaneGetArgs('w13:p1'), ['pane', 'get', 'w13:p1']);
+  // `-- --approve` is pi's project-trust grant: a successor's directory is fresh to pi, and its first
+  // run otherwise stops at "Trust project folder?" and never becomes ready (measured: `agent start`
+  // times out and the handoff fails with no session).
   assert.deepEqual(herdrAgentStartArgs('goal-x', 'pi', 'wN:p1M', 60_000), [
     'agent',
     'start',
@@ -119,6 +122,8 @@ test('the successor opens as a tab, not a split, and the tab names its goal', ()
     'wN:p1M',
     '--timeout',
     '60000',
+    '--',
+    '--approve',
   ]);
 });
 

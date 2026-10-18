@@ -184,6 +184,11 @@ other's type.
    while `pendingHandoff` is set, so a baton transfer that does not retire it leaves the successor
    never-nudged and escalates "requested but never taken" about a handoff that landed. Ask of any
    `pending*` field: which transition retires it, on every path?
+- `.ai/pitfalls/cases/a-long-run-cannot-be-produced-by-making-the-work-bigger.md` — three real probes
+  proved the loop end to end (incl. a real L2 timer). The model finishes in one turn, so a long run needs
+  a gate that cannot be satisfied until something outside the session changes. Also: `rounds: 0` is not
+  "did nothing" (rounds are *progress* reports), and `herdr agent start` needs `-- --approve` or a fresh
+  directory stops at "Trust project folder?".
 - `.ai/pitfalls/cases/terminal-id-looks-like-an-id-and-is-not.md` — label / 结构 ID / 进程句柄有三种不同的
   生存期。实测（hpstation，herdr 0.8.2）：server 重启后 `workspace_id`/`tab_id`/`pane_id` 全部恢复，而
   `terminal_id` 每次都变；pane 回来了，里面的进程没有。凡是要到达「agent」的寻址都需要第二个身份
@@ -234,14 +239,18 @@ other's type.
 
 Next action, in order:
 
-1. **Run one real multi-hour goal.** Still the largest untested assumption: the commit-at-settlement
-   rule, the traceability promise and the 24h liveness deadline have been reasoned about, never
-   exercised. The live jobs so far were `sleep 25`, one handoff, a 12-second L2 timer, and 24h of
-   deadline that nobody has ever waited out. Now that L2 exists the cheapest honest version is a goal
-   whose only work is a `wait` of 30–60 minutes: the timer fires, the engine releases the latch, and a
-   real turn judges the result.
-2. **Exercise the M4 spawn end to end** — and the interesting variant is a handoff *during* a wait,
-   where the successor must re-arm from `goal.json` and the predecessor's timer must be refused.
+1. **A real hour-long unattended run is still the untested thing — but the shape of the test is now
+   known.** Three real probes (real pi in a real herdr window, real repo, real `npm test` gate) ran the
+   whole loop end to end: A and B finished in one turn, C waited 90 s on a real L2 timer, was woken, and
+   closed on an observed verdict. The lesson: **a long run cannot be produced by making the work bigger**
+   — it needs a gate that is unsatisfiable until something outside the session changes, and an explicit
+   `wait`. So the next step is probe C scaled up: the same relay, `wakeOnSeconds` in the tens of minutes,
+   and *nothing* else to do — then check the 24h liveness deadline with a short `GoalLimits` override
+   instead of waiting a day. See
+   `.ai/pitfalls/cases/a-long-run-cannot-be-produced-by-making-the-work-bigger.md`.
+2. **Exercise the handoff *during* a wait** — the one composition never run: the successor must re-arm
+   from `goal.json` (`session_start` → `reconcile`) and the predecessor's timer must be refused by the
+   baton guard. The reducer proves both; two real panes have never done it.
 3. Publish 0.5.0 (**human**, 2FA), then let `research` declare `.ai/sections.json` themselves — that
    is the acceptance test for the extension surface, and it must be done by them, not by us.
 

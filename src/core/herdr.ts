@@ -81,7 +81,20 @@ export const herdrTabCreateArgs = (workspaceId: string, cwd: string, label: stri
 /** `herdr tab close <id>` — undoing a window whose agent never started. */
 export const herdrTabCloseArgs = (tabId: string): string[] => ['tab', 'close', tabId];
 
-/** Start an interactive agent in a pane that is sitting at a shell prompt. */
+/**
+ * Start an interactive agent in a pane that is sitting at a shell prompt.
+ *
+ * `--approve` after the `--` is pi's project-trust grant, and a handoff needs it. A successor opens a
+ * **fresh pane in a fresh directory**, and pi's first run there stops at `Trust project folder?` — herdr
+ * then reports no session and the handoff fails with `timed out waiting for agent startup`, which is
+ * exactly what a first handoff into a new project did on this machine.
+ *
+ * Granting it is not a widening of trust: engram has *already* written `.pi/extensions/engram-goal.ts`
+ * and `.agents/skills/*` into that directory — that is what the carrier is for — so the successor only
+ * runs project code engram itself put there, in the directory the human asked the goal to be about. The
+ * alternative is a handoff that waits for a human to click through a prompt, which defeats the point of
+ * an unattended run.
+ */
 export const herdrAgentStartArgs = (name: string, kind: string, paneId: string, timeoutMs: number): string[] => [
   'agent',
   'start',
@@ -92,6 +105,8 @@ export const herdrAgentStartArgs = (name: string, kind: string, paneId: string, 
   paneId,
   '--timeout',
   String(timeoutMs),
+  '--',
+  '--approve',
 ];
 
 /**
