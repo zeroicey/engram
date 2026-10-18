@@ -17,6 +17,7 @@ import {
   runGoalUnit,
   runGoalWake,
   identityFromEnv,
+  runGoalHandoff,
 } from './commands/goal.js';
 import { parseDoneWhen } from './core/goal-store.js';
 import type { DoneWhen, MetricOp } from './core/goal.js';
@@ -134,6 +135,7 @@ GOAL VERBS
   engram goal status | list | check [--id <id>] | close [--id <id>] [--abandoned]
   engram goal wake --reason "<why>" [--token <token>] [--id <id>] [--deliver]
   engram goal unit <id> --job "<command>" [--write] [--engram <path>]
+  engram goal handoff [--id <id>] [--reason "<why now>"] [--json]   # open a successor pane
   engram goal baton --session <path> [--pane <pane-id>] [--id <id>]
 
   A goal is judged, not asserted: \`done\` requires the engine to observe \`done_when\`.
@@ -379,6 +381,31 @@ async function cmdGoal(root: string, args: Args): Promise<number> {
         }),
       );
     }
+    case 'handoff': {
+      // `--json` is what the generated extension reads, for the same reason `event --json` exists:
+      // the human output is prose, and a host must not parse prose.
+      const identity = identityFromEnv();
+      const res = await runGoalHandoff({
+        root,
+        id: str(args.flags, 'id'),
+        reason: str(args.flags, 'reason'),
+        name: str(args.flags, 'name'),
+        paneId: str(args.flags, 'pane'),
+        ...(identity.sessionPath ? { sessionPath: identity.sessionPath } : {}),
+      });
+      if (flag(args.flags, 'json')) {
+        console.log(
+          JSON.stringify({
+            ok: res.exitCode === 0,
+            // The lines are the record of the five steps; a host shows them and nothing else.
+            message: res.lines.join('\n'),
+            warnings: res.warnings,
+          }),
+        );
+        return res.exitCode;
+      }
+      return print(res);
+    }
     case 'unit': {
       const job = str(args.flags, 'job');
       if (!job) {
@@ -449,9 +476,10 @@ async function cmdGoal(root: string, args: Args): Promise<number> {
     }
     default:
       console.error(
-        'usage: engram goal <new|status|list|check|wake|unit|baton|close|event>\n\n' +
+        'usage: engram goal <new|status|list|check|wake|unit|handoff|baton|close|event>\n\n' +
           '  new "<goal>" [--cmd "a && b"] [--metric file:path:op:value] [--checklist]\n' +
           '  unit <id> --job "<command>" [--write]   # systemd unit that wakes on exit\n' +
+          '  handoff [--reason "<why now>"] [--json]  # open the successor pane through herdr\n' +
           '  status | list | check [--id <id>] | close [--abandoned] [--id <id>]\n' +
           '  wake --reason "<why>" [--token <t>] | baton --session <path> [--pane <id>]\n' +
           '  event --type <settled|run-started|wake|reconcile|report|status> [--report <json>] [--session <path>]',

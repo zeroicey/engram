@@ -50,6 +50,100 @@ export const herdrListArgs = (): string[] => ['agent', 'list'];
 /** `herdr agent prompt <target> <text>` — argv, never a shell string. */
 export const herdrPromptArgs = (target: string, text: string): string[] => ['agent', 'prompt', target, text];
 
+/**
+ * Split `cwd`'s pane beside the pane that holds the baton.
+ *
+ * The target pane is **named**, never left implicit: without it herdr splits whatever pane the
+ * client last focused, which put the successor in a different workspace than the goal it inherits.
+ * `--no-focus` keeps the human's cursor where it is — a handoff is not a request to steal the
+ * keyboard.
+ */
+export const herdrPaneSplitArgs = (paneId: string, cwd: string): string[] => [
+  'pane',
+  'split',
+  paneId,
+  '--direction',
+  'right',
+  '--cwd',
+  cwd,
+  '--no-focus',
+];
+
+/** Start an interactive agent in a pane that is sitting at a shell prompt. */
+export const herdrAgentStartArgs = (name: string, kind: string, paneId: string, timeoutMs: number): string[] => [
+  'agent',
+  'start',
+  name,
+  '--kind',
+  kind,
+  '--pane',
+  paneId,
+  '--timeout',
+  String(timeoutMs),
+];
+
+/**
+ * A dotted lookup into a herdr response.
+ *
+ * herdr answers with `{"id": "cli:pane:split", "result": { … }}`, and the shape is the runtime's,
+ * not ours — so this returns `null` for anything unexpected instead of throwing a `TypeError` that
+ * would read as "engram is broken" when the runtime merely changed.
+ */
+export function stringAt(json: unknown, dotted: string): string | null {
+  let cur: unknown = json;
+  for (const key of dotted.split('.')) {
+    if (cur === null || typeof cur !== 'object') return null;
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  return typeof cur === 'string' && cur !== '' ? cur : null;
+}
+
+/** The pane a `pane split` created. */
+export const createdPaneId = (json: unknown): string | null => stringAt(json, 'result.pane.pane_id');
+
+/**
+ * The session file of a started agent.
+ *
+ * `agent start` reports it directly, which is what makes a real baton transfer possible: the
+ * successor's identity is known *before* it is prompted, so the goal can be handed over and its
+ * first turn already belongs to the holder instead of being refused as an intruder.
+ */
+export const startedSessionPath = (json: unknown): string | null => stringAt(json, 'result.agent.agent_session.value');
+
+export interface HerdrCall {
+  ok: boolean;
+  /** Always set: what was attempted, and what actually happened. */
+  detail: string;
+  json: unknown;
+}
+
+/**
+ * One herdr command whose answer is a JSON document.
+ *
+ * Separate from `promptPane` because the callers differ in how much they may assume: a wake may
+ * arrive when herdr is gone (and must not be lost), while a handoff cannot proceed at all without
+ * the runtime and must say so before it touches the goal record.
+ */
+export async function herdrJson(argv: string[], deps: HerdrDeps = {}): Promise<HerdrCall> {
+  const { run, bin } = runnerOf(deps);
+  const res = await run(argv, deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const label = `${bin} ${argv.slice(0, 2).join(' ')}`;
+  if (res.status === null) {
+    return { ok: false, detail: `cannot run ${bin} (${res.error ?? 'spawn failed'})`, json: null };
+  }
+  const refused = herdrError(res.stdout);
+  if (refused !== null) return { ok: false, detail: `${label} refused: ${refused}`, json: null };
+  if (res.status !== 0) {
+    const why = res.error ?? res.stdout.trim();
+    return { ok: false, detail: `${label} exited ${res.status}${why ? `: ${why}` : ''}`, json: null };
+  }
+  try {
+    return { ok: true, detail: `${label} ok`, json: JSON.parse(res.stdout.trim()) };
+  } catch {
+    return { ok: false, detail: `${label} did not answer with JSON: ${res.stdout.trim().slice(0, 200)}`, json: null };
+  }
+}
+
 function defaultRun(bin: string): (argv: string[], timeoutMs: number) => Promise<HerdrRun> {
   return (argv, timeoutMs) =>
     new Promise<HerdrRun>((resolve) => {

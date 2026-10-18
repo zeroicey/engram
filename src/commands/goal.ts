@@ -23,7 +23,16 @@ import {
   writeFileGuarded,
   writeIfMissing,
 } from '../core/project.js';
-import { paneForSessionPath, promptPane, type HerdrDeps } from '../core/herdr.js';
+import {
+  createdPaneId,
+  herdrAgentStartArgs,
+  herdrJson,
+  herdrPaneSplitArgs,
+  paneForSessionPath,
+  promptPane,
+  startedSessionPath,
+  type HerdrDeps,
+} from '../core/herdr.js';
 import { engramCommand, goalUnitName, goalUnitSource, unitOutcome } from '../templates/systemd.js';
 import { workingTreeDigest } from '../core/git.js';
 import { evaluateDoneWhen, type DoneVerdict, type EvalDeps } from '../core/goal-eval.js';
@@ -409,12 +418,22 @@ export async function runGoalBaton(root: string, sessionPath: string, paneId?: s
 
   const now = new Date().toISOString();
   const previous = read.record.baton?.sessionPath ?? 'none';
+  // Taking the baton **is** taking the handoff, so a pending request is cleared here. Without this a
+  // successful handoff left `pendingHandoff` set: the successor's continuation guard is silent while a
+  // handoff is pending, so it would never be nudged, and `reconcile` would later escalate "handoff was
+  // requested but never taken" about a handoff that was taken. A caller whose transfer does *not* mean
+  // the handoff was taken must roll back explicitly (see `runGoalHandoff`), not reuse this command.
+  const clearedHandoff = read.record.pendingHandoff !== null;
   await writeGoalRecord(root, {
     ...read.record,
     baton: { sessionPath, paneId: paneId ?? null, startedAt: now },
+    pendingHandoff: null,
     updatedAt: now,
   });
-  return ok([`baton ${previous} → ${sessionPath}`]);
+  return ok([
+    `baton ${previous} → ${sessionPath}`,
+    ...(clearedHandoff ? ['  pending handoff cleared — it was taken, not abandoned'] : []),
+  ]);
 }
 
 /**
@@ -447,6 +466,154 @@ export interface EngramCommandOptions {
   node?: string;
   /** Injected in tests, so the emitted prefix is asserted without touching the filesystem. */
   isExecutable?: (file: string) => Promise<boolean>;
+}
+
+export interface GoalHandoffOptions {
+  root: string;
+  id?: string;
+  /** Why the delivery point is clean. Folded into the successor's first message. */
+  reason?: string;
+  /** The predecessor's identity, so the reducer can check the baton before the runtime is touched. */
+  sessionPath?: string;
+  /** The pane to split beside. Defaults to the baton's pane, then to the successor model below. */
+  paneId?: string;
+  /** The successor's pane name, so a human can tell whose handoff it is. */
+  name?: string;
+  env?: NodeJS.ProcessEnv;
+  herdr?: HerdrDeps;
+}
+
+/**
+ * The successor's first message. It is the whole handoff: a fresh session knows nothing but what a
+ * human would type into it.
+ *
+ * Deliberately names files rather than summarising them. A summary would be a second, staler copy of
+ * the bank — and the bank is the artifact the next session is supposed to read.
+ */
+export function handoffPrompt(input: { id: string; goal: string; paneId: string; reason?: string }): string {
+  const why = input.reason?.trim();
+  return [
+    `You are taking the baton for the long-running goal ${input.id} in this project (pane ${input.paneId}).`,
+    `Goal: ${input.goal}`,
+    why ? `The previous holder handed off because: ${why}.` : 'The previous holder handed off at a clean delivery point.',
+    '',
+    'Before working, read in this order: `.ai/CURRENT_TASK.md`, the newest `.ai/sessions/*-handoff.md`,',
+    `and \`.ai/goal/${input.id}/BRIEF.md\` (its \`done_when\` is what ends this goal — a claim is not a verdict).`,
+    'You are the baton holder: report with goal_report once per turn. Do not ask the previous holder',
+    'anything — it is not reading this pane. If the bank and the code disagree, fix the bank in the same change.',
+  ].join('\n');
+}
+
+/**
+ * Open a successor pane through herdr and hand it the goal (M4).
+ *
+ * The order of the five steps is the whole design, and each edge is a failure that was reasoned
+ * about rather than discovered:
+ *
+ * 1. **Record the request first.** `pendingHandoff` is set through the reducer (which also enforces
+ *    that only the baton holder may drive), so a spawn that fails leaves evidence and the stale-handoff
+ *    escalation still fires. Touching the runtime before the record would make a failed handoff
+ *    invisible.
+ * 2. **Split beside the holder's pane, not beside "the current one".** herdr splits whatever pane the
+ *    client last focused otherwise; a probe on 2026-10-18 put the successor in another workspace.
+ * 3. **Start, and take the successor's session file from the answer.** That identity is what makes a
+ *    real baton transfer possible instead of a placeholder.
+ * 4. **Transfer the baton before prompting.** The successor's first turn must already belong to the
+ *    holder, or its `run-started` and first report are refused as an intruder's and it settles in
+ *    silence. If the prompt then fails, the baton is handed *back* — an orphaned goal is worse than a
+ *    failed handoff.
+ * 5. **Prompt last, without `--wait`.** A successor's first turn can take minutes; the predecessor's
+ *    job is to hand over and stop, not to watch.
+ *
+ * Outside herdr there is nothing to open a pane with, so this refuses *before* step 1 and says why.
+ * The handoff decision's rule 5 still holds: the model asks for a handoff, and this — a command the
+ * model called — is what opens the pane. No lifecycle code decides to spawn.
+ */
+export async function runGoalHandoff(opts: GoalHandoffOptions): Promise<GoalCliResult> {
+  const env = opts.env ?? process.env;
+  const active = opts.id !== undefined ? { id: opts.id, record: (await readGoalRecord(opts.root, opts.id)).record } : await activeGoal(opts.root);
+  if (active === null || active.record === null) return fail(['no active goal to hand off']);
+  const id = active.id;
+
+  if (env.HERDR_ENV !== '1') {
+    return fail([
+      'a handoff needs herdr: engram can only open a successor pane through it.',
+      '  run this from inside a herdr pane (HERDR_ENV=1), or report blocked and let a human open one.',
+    ]);
+  }
+
+  // 1. The record, through the reducer: the baton rule and the `pendingHandoff` state belong to the
+  //    engine, not to this command.
+  const reported = await runGoalReport(
+    opts.root,
+    { status: 'handoff', ...(opts.reason ? { reason: opts.reason } : {}) },
+    opts.sessionPath !== undefined ? { sessionPath: opts.sessionPath } : {},
+  );
+  if (!reported.effects.some((e) => e.kind === 'handoff')) {
+    return fail([
+      `${id}: handoff not recorded — the engine ignored it`,
+      ...reported.effects.filter((e) => e.kind === 'ignore').map((e) => `  ${e.reason}`),
+    ]);
+  }
+
+  const deps = opts.herdr ?? {};
+  const predecessor = opts.sessionPath ?? reported.record?.baton?.sessionPath ?? null;
+  const target = opts.paneId ?? active.record.baton?.paneId ?? null;
+  const lines: string[] = [`handoff recorded for ${id}`];
+
+  // 2. A pane to inherit the goal.
+  const split = await herdrJson(herdrPaneSplitArgs(target ?? '', opts.root), deps);
+  const pane = split.ok ? createdPaneId(split.json) : null;
+  if (pane === null) {
+    return fail([
+      ...lines,
+      `could not open a successor pane: ${split.ok ? `${deps.bin ?? 'herdr'} answered without a pane id` : split.detail}`,
+      '  the handoff request stays on the record, so the stale-handoff escalation still applies',
+    ]);
+  }
+  lines.push(`  pane: ${pane} (split beside ${target ?? 'the current pane'})`);
+
+  // 3. The successor, and its identity.
+  const name = opts.name ?? `goal-${id.slice(0, 24)}`;
+  const start = await herdrJson(herdrAgentStartArgs(name, 'pi', pane, 60_000), deps);
+  const successor = start.ok ? startedSessionPath(start.json) : null;
+  if (successor === null) {
+    lines.push(`  successor not started: ${start.ok ? 'herdr answered without a session path' : start.detail}`);
+    return { exitCode: 1, lines, warnings: [`the successor pane ${pane} is open but has no agent`] };
+  }
+  lines.push(`  successor: ${successor}`);
+
+  // 4. Baton first, prompt second — with a rollback, because an unclaimed goal is the worse failure.
+  const transfer = await runGoalBaton(opts.root, successor, pane, id);
+  lines.push(...transfer.lines.map((l) => `  ${l}`));
+  const delivered = await promptPane(pane, handoffPrompt({ id, goal: active.record.goal, paneId: pane, ...(opts.reason ? { reason: opts.reason } : {}) }), deps);
+  if (!delivered.ok) {
+    lines.push(`  prompt NOT delivered: ${delivered.detail}`);
+    if (predecessor !== null) {
+      // An explicit rollback, not `runGoalBaton`: that command *clears* a pending handoff because a
+      // transfer means it was taken, and this one was not. Restoring the value the reducer just wrote
+      // is what keeps the request — and the stale-handoff escalation — alive.
+      const current = await readGoalRecord(opts.root, id);
+      if (current.record === null) {
+        lines.push(`  and ${id} could not be re-read, so the baton stays with ${successor}`);
+      } else {
+        const now = new Date().toISOString();
+        await writeGoalRecord(opts.root, {
+          ...current.record,
+          baton: { sessionPath: predecessor, paneId: active.record.baton?.paneId ?? null, startedAt: now },
+          pendingHandoff: reported.record?.pendingHandoff ?? null,
+          updatedAt: now,
+        });
+        lines.push(`  baton ${successor} → ${predecessor}`, '  the handoff request stays pending — it was not taken');
+      }
+    } else {
+      // No recorded predecessor: the baton cannot be returned, so say so rather than pretend.
+      lines.push('  the baton could not be returned — no predecessor was recorded');
+    }
+    return { exitCode: 1, lines, warnings: [`${pane} holds the baton but never received the brief`] };
+  }
+  lines.push(`  delivered: ${delivered.detail}`, '  this session must stop driving: the baton is not yours any more');
+  return ok(lines);
 }
 
 export interface GoalUnitOptions extends EngramCommandOptions {

@@ -164,8 +164,9 @@ export default function (pi) {
       "status=progress continues. status=wait parks the loop until something ends on its own " +
       "(needs wakeOnType plus wakeOnSeconds, wakeOnPid or wakeOnPath). status=blocked needs a human " +
       "(reason). status=done asks engram to verify done_when — a claim is not a verdict. " +
-      "status=handoff offers this as a clean delivery point. If BRIEF.md declares no done_when, " +
-      "declare one first or report blocked.",
+      "status=handoff opens a successor pane through herdr, hands it the baton and this session stops " +
+      "driving — use it at a clean delivery point, not to escape a hard problem. If BRIEF.md declares " +
+      "no done_when, declare one first or report blocked.",
     parameters: {
       type: "object",
       properties: {
@@ -204,6 +205,23 @@ export default function (pi) {
       if (res.reason) parts.push(res.reason);
       if (res.notify) parts.push(res.notify);
       if (!res.continue && res.message) parts.push(res.message);
+      // A handoff report is a *request*, not an action: pi's own session API cannot create a session
+      // (upstream #2488), so the successor pane is opened through herdr — and only because the model
+      // asked for the handoff in this very call. Nothing in the lifecycle decides to spawn.
+      if (res.reason === "handoff requested") {
+        const handed = call([
+          "goal",
+          "handoff",
+          "--json",
+          "--reason",
+          String(params.reason || params.note || "context is filling"),
+        ]);
+        parts.push(
+          handed && handed.message
+            ? handed.message
+            : "handoff was NOT taken — no successor pane was opened (is herdr present?)",
+        );
+      }
       return { content: [{ type: "text", text: parts.join("\n") }], details: undefined };
     },
   });
