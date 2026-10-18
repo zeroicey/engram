@@ -1,6 +1,6 @@
 # engram — agent instructions
 
-Portable project memory + scaffolder for AI coding tools. Node ≥ 20, ESM-only TypeScript, **zero
+Portable project memory + scaffolder for Pi. Node ≥ 20, ESM-only TypeScript, **zero
 runtime dependencies**, built by `tsc` alone.
 
 ## Commands
@@ -11,11 +11,13 @@ npm run typecheck           # tsc --noEmit
 npm run build               # tsc -> build/  (bin lives at build/src/cli.js)
 npm test                    # build + node --test build/test/*.test.js
 
-node --test build/test/fingerprint.test.ts.js   # one suite
+node --test build/test/fingerprint.test.js      # one suite
 node --test --test-name-pattern 'fingerprint' build/test/*.test.js
-node build/src/cli.js init --tools agents,claude --dry-run
+node build/src/cli.js init --dry-run
 node build/src/cli.js sync
 node build/src/cli.js dump --json
+node build/src/cli.js goal status          # the active goal, or why there is none
+node build/src/cli.js config --goal on     # opt into the goal engine (writes a pi carrier on sync)
 ```
 
 `tsconfig.json` `outDir` and `package.json` `bin` must name the same directory. A green `tsc` exit
@@ -26,11 +28,11 @@ code does **not** prove output landed where `bin` expects (see `.ai/pitfalls/cas
 | Path | Owns |
 | --- | --- |
 | `src/cli.ts` | argv parsing, dispatch, human output |
-| `src/core/` | leaf layer: fs helpers, project detection, `.ai/` parsing, declared sections, skill sources, fingerprint budgeting |
+| `src/core/` | leaf layer: fs helpers, project detection, `.ai/` parsing, declared sections, skill sources, fingerprint budgeting, and the **host-free goal engine** (`goal.ts` state machine, `goal-store.ts`, `goal-eval.ts`, `goal-host.ts`) |
 | `src/templates/` | contract block and its row tables, `.ai/` skeleton, built-in skill specs, bootstrap meta-prompt. No fs access |
-| `src/adapters/` | per-tool registry and renderers for rule files and skill carriers |
-| `src/commands/` | `init`, `dump`, `new`, `sync` orchestration (`sync` dispatch lives in `cli.ts`) |
-| `test/` | 8 `node:test` suites, incl. `architecture.test.ts` which enforces the layering |
+| `src/adapters/` | the one-entry registry (Pi) and renderers for AGENTS.md and the skill carriers |
+| `src/commands/` | `init`, `dump`, `new`, `sync`, `goal` orchestration (`sync` dispatch lives in `cli.ts`); `goal-carrier.ts` writes the opt-in `.pi/extensions/engram-goal.ts` |
+| `test/` | 13 `node:test` suites, incl. `architecture.test.ts` which enforces the layering |
 | `.ai/` | this project's own memory bank (dogfooded) |
 
 Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templates/meta-prompt`.
@@ -46,8 +48,8 @@ Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templ
 - No runtime dependency, ever — see `.ai/decisions/2026-10-01-zero-runtime-dependencies.md`.
 - The contract block between `<!-- engram:contract:start -->` and `<!-- engram:contract:end -->` is
   machine-owned. Never hand-edit it; `engram sync` overwrites it.
-- Canonical skills live once in `.ai/skills/*.md`. Tool carriers under `.agents/`, `.claude/`, `.cursor/`,
-  `.gemini/`, `.github/prompts/` are generated — edit the canonical file and run `engram sync`.
+- Canonical skills live once in `.ai/skills/*.md`. Tool carriers under `.agents/` and `.pi/`
+  (including the goal extension) are generated - edit the canonical file and run `engram sync`.
   Pi reads `.agents/skills/`; do not add a `.pi/skills/` copy (same skill name, two scanned
   dirs, collision warning at every startup).
 - `.ai/` is an extension surface, not a fixed schema. A new L2 partition is declared in
@@ -59,21 +61,19 @@ Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templ
 
 ## Definition of done
 
-1. `npm test` passes (147 tests today, `node --test` on compiled output).
+1. `npm test` passes (256 tests today, `node --test` on compiled output).
 2. `npm run typecheck` is clean.
 3. `node build/src/cli.js dump` stays inside its byte budget.
 4. Behaviour that the memory bank records — an invariant, a decision, a pitfall — is written back
    in the same change, using `/remember-decision`, `/remember-pitfall` or `/handoff`.
 5. `engram sync` is clean afterwards: no unexpected `updated` rule files, no `missing canonical skill`.
 
-## Sandboxed agents (Codex, Pi)
+## Sandboxed agents
 
 - Read-only by default; ask before `git commit`, `git push`, `npm publish`, `git tag`.
 - `npm test` writes only inside the repository and `os.tmpdir()` sandboxes.
 - Network is not needed for anything except `npm install` / `npm publish`.
 - Never rewrite `.ai/` history: decisions are flipped (`💭` → `✅` → `🪦`), not deleted.
-
-_Read by: pi, codex._
 
 <!-- engram:managed -->
 

@@ -52,3 +52,107 @@ export async function findGitRepository(start: string): Promise<GitCheck> {
     cur = up;
   }
 }
+
+/**
+ * Read `HEAD` without running git, to get a working-tree digest.
+ *
+ * The goal engine's "no file change across K rounds" detector needs to know whether anything
+ * happened. Doing that honestly requires the *working tree*, not just the commit — an agent that
+ * edited six files and committed none has made progress, and a detector that says otherwise blocks a
+ * productive goal. So the digest is `HEAD` + every tracked-file mtime/size under the working tree.
+ *
+ * Reading git's own index was the obvious alternative and it is worse: it is a binary format, it is
+ * updated by commands that do not change files (`git status` refreshes stat data), and parsing it is
+ * a second implementation of git in a tool that promised not to have one. `stat` is enough for
+ * "did anything change", which is all a stuck detector needs.
+ *
+ * Returns `null` when the host cannot see a working tree — and `null` must never be read as
+ * "unchanged", or every round on a non-git project would look stuck.
+ */
+export async function workingTreeDigest(root: string, maxEntries = 20_000): Promise<string | null> {
+  const check = await findGitRepository(root);
+  const repositoryRoot = check.repositoryRoot;
+  if (!check.hasRepository || repositoryRoot === null) return null;
+
+  const head = await readHead(repositoryRoot);
+  const parts: string[] = [head ?? 'no-head'];
+  const IGNORED = new Set(['.git', 'node_modules', 'dist', 'build', 'out', 'target', 'coverage', '__pycache__', '.venv', 'venv']);
+
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (parts.length > maxEntries || depth > 12) return;
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (parts.length > maxEntries) return;
+      if (e.name.startsWith('.') && e.name !== '.ai') continue;
+      if (IGNORED.has(e.name)) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        await walk(full, depth + 1);
+        continue;
+      }
+      if (!e.isFile()) continue;
+      try {
+        const st = await fs.stat(full);
+        parts.push(`${path.relative(repositoryRoot, full)}:${st.size}:${Math.floor(st.mtimeMs)}`);
+      } catch {
+        /* a file that vanished mid-walk is not a change worth reporting */
+      }
+    }
+  };
+
+  await walk(repositoryRoot, 0);
+  parts.sort();
+  // A short, stable fingerprint: the detector only compares digests, it never parses one.
+  return `${parts.length}:${hash(parts.join('\n'))}`;
+}
+
+/** `HEAD` ref or detached sha; `null` when the repository has no commits yet. */
+async function readHead(repositoryRoot: string): Promise<string | null> {
+  const gitDir = await resolveGitDir(repositoryRoot);
+  if (gitDir === null) return null;
+  try {
+    const head = await fs.readFile(path.join(gitDir, 'HEAD'), 'utf8');
+    const ref = /^ref:\s*(\S+)/.exec(head.trim());
+    if (!ref?.[1]) return head.trim();
+    const refPath = path.join(gitDir, ref[1]);
+    const sha = await fs.readFile(refPath, 'utf8').catch(() => null);
+    return sha?.trim() ?? ref[1];
+  } catch {
+    return null;
+  }
+}
+
+/** `.git` may be a file (`gitdir: …`) in a linked worktree. */
+async function resolveGitDir(repositoryRoot: string): Promise<string | null> {
+  const marker = path.join(repositoryRoot, '.git');
+  const st = await fs.stat(marker).catch(() => null);
+  if (st === null) return null;
+  if (st.isDirectory()) return marker;
+  try {
+    const text = await fs.readFile(marker, 'utf8');
+    const m = /^gitdir:\s*(.+)$/m.exec(text);
+    if (!m?.[1]) return null;
+    const target = m[1].trim();
+    return path.isAbsolute(target) ? target : path.resolve(repositoryRoot, target);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * FNV-1a, 32-bit. Not a security hash — a change detector. Chosen because it is four lines with no
+ * dependency and `node:crypto` would be a heavier import for a number nobody reads.
+ */
+function hash(input: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}

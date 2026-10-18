@@ -35,7 +35,7 @@ async function initIn(root: string): Promise<{ code: number; out: string; err: s
     return true;
   }) as typeof process.stderr.write;
   try {
-    const code = await main(['init', '--root', root, '--tools', 'agents']);
+    const code = await main(['init', '--root', root, '--tools', 'codex']);
     return { code, out: out.join(''), err: err.join('') };
   } finally {
     process.stdout.write = wOut;
@@ -112,7 +112,7 @@ test('init refuses outside git and writes nothing at all', async () => {
 test('init --dry-run does not bypass the git precondition', async () => {
   const sb = await sandboxWithoutGit();
   try {
-    const res = await main(['init', '--root', sb.root, '--tools', 'agents', '--dry-run']).then(
+    const res = await main(['init', '--root', sb.root, '--tools', 'codex', '--dry-run']).then(
       (code) => ({ code }),
     );
     assert.equal(res.code, 1);

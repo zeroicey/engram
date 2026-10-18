@@ -34,12 +34,13 @@ const CORE_ALLOWED = /^(\.\/|node:)/;
  * `.ai/ARCHITECTURE.md` — removing either requires the refactor described there, not a new entry.
  */
 const CORE_KNOWN_EXCEPTIONS = new Set([
-  // `inferToolsFromDisk` maps marker directories back to tool ids, which needs the registry.
-  // Inverting it (core takes the list as a parameter) is the real fix.
-  'core/config.ts → ../adapters/index.js',
   // A single marker constant. Moving it to `core/` and re-exporting from `templates/` is the fix.
   'core/project.ts → ../templates/contract.js',
 ]);
+// `core/config.ts → ../adapters/index.js` was the second entry, deleted when config v2 dropped the
+// tool list: `inferToolsFromDisk` was the only reason a leaf module needed the registry. This suite
+// failed until the entry was removed, which is exactly what the "no stale entries" test below is
+// for — an allowlist that outlives its violation is a place to hide the next one.
 
 async function walk(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -151,13 +152,16 @@ test('the layering invariants in ARCHITECTURE.md still describe the code', async
   assert.ok(arch.includes('src/'), 'ARCHITECTURE.md should describe this repository');
   const registry = await fs.readFile(path.join(SRC, 'adapters', 'index.ts'), 'utf8');
   // "TOOLS is the single place to fix" was documented and false: the frontmatter dialect lived in
-  // rules.ts while the tool record lived in index.ts, so a maintainer following the doc changed
-  // the wrong file and saw no effect.
+  // rules.ts while the tool record lived in index.ts, so a maintainer following the doc changed the
+  // wrong file and saw no effect. With one adapter and no frontmatter dialect the claim is finally
+  // true — the assertion is kept as a conditional so re-introducing a second format must name it.
   assert.ok(
     !/single place to fix/i.test(arch) || /frontmatter/i.test(arch),
     'if ARCHITECTURE.md still claims one place, it must name where the format strings live',
   );
-  assert.ok(registry.includes('styleGuide'), 'the registry keeps the per-tool style guides');
+  assert.ok(registry.includes('styleGuide'), 'the registry keeps the style guide');
+  // One entry. This is the guard that makes the subtraction stick: re-adding a client fails here.
+  assert.equal((registry.match(/^\s{4}id: '/gm) ?? []).length, 1, 'the registry holds exactly one tool');
 });
 
 test('SKILL_SPECS and the fingerprint fallback list cannot drift apart', async () => {
@@ -171,4 +175,19 @@ test('SKILL_SPECS and the fingerprint fallback list cannot drift apart', async (
     [...canonNames].sort(),
     'add a skill to SKILL_SPECS *and* CANONICAL_SKILL_NAMES',
   );
+});
+test('the goal engine reads no clock, no file and no host API', async () => {
+  // ARCHITECTURE.md invariant 9 says `core/goal.ts` is a pure reducer. `CORE_ALLOWED` above permits
+  // every `node:*` import, so it could `import { promises as fs } from 'node:fs'` and nothing failed —
+  // the invariant was prose. Clock substitution only breaks the assertions that pin a timestamp; the
+  // no-op paths would happily use `Date.now()`.
+  const goal = await fs.readFile(path.join(SRC, 'core', 'goal.ts'), 'utf8');
+  const host = await fs.readFile(path.join(SRC, 'core', 'goal-host.ts'), 'utf8');
+
+  for (const [name, source] of [['goal.ts', goal], ['goal-host.ts', host]] as const) {
+    assert.ok(!/from\s+['"]node:(fs|child_process|os|process)/.test(source), `${name} must not touch the machine`);
+    assert.ok(!/\bDate\.now\(|new Date\(\s*\)/.test(source), `${name} must take time as a parameter`);
+    // `new Date(x)` is fine (formatting a supplied timestamp); only *reading* the clock is not.
+    assert.ok(!/Math\.random\(/.test(source), `${name} must stay deterministic`);
+  }
 });

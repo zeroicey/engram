@@ -122,7 +122,7 @@ test('an absent sections file is not a warning', () => {
 test('a declared section reaches every rule file, and removing the declaration removes the rows', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents', 'dsh'] });
+  await runInit({ root: sb.root });
   await sb.write('.ai/sections.json', SECTIONS);
 
   const sync = await runSync(sb.root);
@@ -141,7 +141,7 @@ test('a declared section reaches every rule file, and removing the declaration r
 test('a malformed sections file warns and leaves the contract alone', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   const before = await sb.read('AGENTS.md');
   await sb.write('.ai/sections.json', '{ this is not json');
 
@@ -157,7 +157,7 @@ test('the built-in carriers keep their real argument hints when the directory is
   // silently — nothing failed, and `sync` reported success. Compare the generated text, not counts.
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['pi'] });
+  await runInit({ root: sb.root });
   await runSync(sb.root);
 
   const handoff = await sb.read('.pi/prompts/handoff.md');
@@ -174,7 +174,7 @@ test('the built-in carriers keep their real argument hints when the directory is
 test('a project-authored skill is materialised into every carrier', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents', 'pi', 'dsh'] });
+  await runInit({ root: sb.root });
   await sb.write(
     '.ai/skills/nightly.md',
     '---\nname: nightly\ndescription: Close out a GPU window.\n---\n\nDo the thing.\n',
@@ -193,7 +193,7 @@ test('a project-authored skill is materialised into every carrier', async (t) =>
 test('deleting a skill prunes its generated carrier but never a hand-written one', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents', 'dsh'] });
+  await runInit({ root: sb.root });
   await sb.write('.ai/skills/nightly.md', '---\nname: nightly\ndescription: d\n---\n\nbody\n');
   await runSync(sb.root);
   // A project-owned skill living in the same carrier directory: no generated marker.
@@ -213,7 +213,7 @@ test('deleting a skill prunes its generated carrier but never a hand-written one
 test('a skill file without valid frontmatter warns and gets no carrier', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   await sb.write('.ai/skills/broken.md', 'no frontmatter here\n');
 
   const sync = await runSync(sb.root);
@@ -234,7 +234,7 @@ test('parseSkillFile insists the frontmatter name matches the file name', () => 
 test('engram new scaffolds a declared section from the project template', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   await sb.write('.ai/sections.json', SECTIONS);
   await sb.write('.ai/journal/_TEMPLATE.md', '# <slug> journal\n\n**Date:** YYYY-MM-DD\n');
 
@@ -264,7 +264,7 @@ test('sync with no readable bank must not delete carriers', async (t) => {
   // every generated carrier in `.pi/prompts/` and `.agents/skills/` while reporting success.
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['pi', 'agents'] });
+  await runInit({ root: sb.root });
   assert.ok(await sb.exists('.pi/prompts/handoff.md'));
 
   const { promises: fsp } = await import('node:fs');
@@ -284,7 +284,7 @@ test('sync with an unreadable .ai/skills/ must not delete carriers either', asyn
   // `.ai/` exist" left this hole wide open — deleting `.ai/skills/` emptied every carrier dir.
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['pi', 'agents'] });
+  await runInit({ root: sb.root });
   const carriers = ['.pi/prompts/handoff.md', '.agents/skills/handoff/SKILL.md', '.agents/skills/audit/SKILL.md'];
 
   const { promises: fsp } = await import('node:fs');
@@ -302,7 +302,7 @@ test('a hand-written carrier that merely mentions the marker survives', async (t
   // of the promise in the pruner's docstring. Only a whole generated header line counts now.
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   await sb.write(
     '.agents/skills/engram-notes/SKILL.md',
     '---\nname: engram-notes\ndescription: mine\n---\n\nCarriers are stamped `<!-- engram:generated -->` by sync.\n',
@@ -321,7 +321,7 @@ test('pruning will not follow a symlink out of the repository', async (t) => {
   const sb = await sandbox();
   const outside = await sandbox('engram-outside-');
   t.after(() => Promise.all([sb.cleanup(), outside.cleanup()]));
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   await outside.write(
     'handoff/SKILL.md',
     '<!-- engram:generated --> generated by engram from .ai/skills/handoff.md — do not edit\n\nbody\n',
@@ -343,7 +343,7 @@ test('a newline in trigger or writeWhen cannot inject a contract marker', async 
   // reporting `balanced` the whole time.
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   await sb.write(
     '.ai/sections.json',
     JSON.stringify({
@@ -393,7 +393,7 @@ test('an over-long file pattern is refused instead of crashing engram new', asyn
 
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   const res = await runNewSection({
     root: sb.root,
     section: { name: 'long', dir: '.ai/long', trigger: 't' },
@@ -406,7 +406,7 @@ test('an over-long file pattern is refused instead of crashing engram new', asyn
 test('a retired sink dir is pruned, but only its generated files', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   // What engram used to write, plus a hand-written skill in the same retired directory.
   const generated = await sb.read('.agents/skills/handoff/SKILL.md');
   await sb.write('.pi/skills/handoff/SKILL.md', generated);
@@ -483,7 +483,7 @@ test('a declared path can never escape .ai/ — traversal, separators and contro
   // bypass validation that only exists in the JSON parser.
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   await assert.rejects(
     runNewSection({
       root: sb.root,
@@ -519,7 +519,7 @@ test('CRLF and BOM frontmatter parse the same as LF', () => {
 test('dump advertises declared sections so an agent learns they exist', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   await sb.write('.ai/sections.json', SECTIONS);
 
   const dump = await runDump({ root: sb.root });
@@ -565,7 +565,7 @@ test('a YAML block scalar is refused by name, not silently reduced to ">"', () =
 test('engram new <section> refuses to clobber unless forced', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   const section = { name: 'journal', dir: '.ai/journal', trigger: 't' };
   assert.equal((await runNewSection({ root: sb.root, section, title: 'Window 4' })).created, true);
   assert.equal((await runNewSection({ root: sb.root, section, title: 'Window 4' })).created, false);
@@ -575,7 +575,7 @@ test('engram new <section> refuses to clobber unless forced', async (t) => {
 test('engram new <section> falls back to a stub when no template exists', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   const res = await runNewSection({
     root: sb.root,
     section: { name: 'journal', dir: '.ai/journal', trigger: 't', status: ['📝 DRAFT'] },
@@ -589,7 +589,7 @@ test('engram new <section> falls back to a stub when no template exists', async 
 test('a section whose dir is a file fails with a sentence, not a raw EEXIST', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   await sb.write('.ai/journal', 'i am a file\n');
   await assert.rejects(
     runNewSection({ root: sb.root, section: { name: 'journal', dir: '.ai/journal', trigger: 't' }, title: 'x' }),
@@ -600,7 +600,7 @@ test('a section whose dir is a file fails with a sentence, not a raw EEXIST', as
 test('a _-prefixed skill file is inert and does not warn', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   await sb.write('.ai/skills/_template.md', '---\nname: _template\ndescription: d\n---\n\nx\n');
   const sync = await runSync(sb.root);
   assert.equal(await sb.exists('.agents/skills/_template/SKILL.md'), false);
@@ -610,16 +610,16 @@ test('a _-prefixed skill file is inert and does not warn', async (t) => {
 test('sync --dry-run with sections reports the same actions and writes nothing', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   await sb.write(
     '.ai/sections.json',
     JSON.stringify({ version: 1, sections: [{ name: 'journal', dir: '.ai/journal', trigger: 't', writeWhen: 'w' }] }),
   );
   const before = await sb.read('AGENTS.md');
-  const dry = await runSync(sb.root, [], true);
+  const dry = await runSync(sb.root, true);
   assert.equal(await sb.read('AGENTS.md'), before, 'dry-run wrote a rule file');
   assert.ok(dry.ruleFiles.some((f) => f.path === 'AGENTS.md' && f.action === 'updated'));
-  const real = await runSync(sb.root, [], false);
+  const real = await runSync(sb.root, false);
   assert.deepEqual(dry.ruleFiles, real.ruleFiles, 'dry-run disagrees with the real run');
 });
 
@@ -629,7 +629,7 @@ test('sync refuses to write a carrier through a symlink out of the project', asy
   const sb = await sandbox();
   const outside = await sandbox('engram-outside-');
   t.after(() => Promise.all([sb.cleanup(), outside.cleanup()]));
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
 
   const { promises: fsp } = await import('node:fs');
   await outside.write('target.md', 'MY OWN NOTES — do not touch\n');
@@ -645,7 +645,7 @@ test('sync refuses to write a carrier through a symlink out of the project', asy
   const q = await sandbox();
   const outDir = await sandbox('engram-outside-dir-');
   t.after(() => Promise.all([q.cleanup(), outDir.cleanup()]));
-  await runInit({ root: q.root, toolIds: ['agents'] });
+  await runInit({ root: q.root });
   await fsp.rm(`${q.root}/.agents/skills`, { recursive: true, force: true });
   await fsp.symlink(outDir.root, `${q.root}/.agents/skills`);
   const sync = await runSync(q.root);
@@ -661,7 +661,7 @@ test('declaring a section must not evict pitfalls from the fingerprint', async (
   // binding decisions: the new feature outranked the content it exists to complement.
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   for (let i = 1; i <= 5; i++) {
     await sb.write(
       `.ai/decisions/2026-10-0${i}-topic${i}.md`,
@@ -697,7 +697,7 @@ test('dump never emits more bytes than --max-bytes', async (t) => {
   // so `dump --max-bytes 50 | wc -c` reported 51 while stderr said "50 bytes · at budget".
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await runInit({ root: sb.root, toolIds: ['agents'] });
+  await runInit({ root: sb.root });
   for (const maxBytes of [50, 100, 338, 400, 1270]) {
     const { markdown } = await runDump({ root: sb.root, maxBytes });
     const emitted = markdown.endsWith('\n') ? markdown : `${markdown}\n`;

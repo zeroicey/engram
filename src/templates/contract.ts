@@ -3,7 +3,7 @@
  *
  * Layer 0 = the dynamic fingerprint (`engram dump`), injected by the user or a
  *            system prompt. It is never written into rule files by engram.
- * Layer 1 = the static contract that every tool-native rule file MUST carry so
+ * Layer 1 = the static contract that the rule file MUST carry so
  *            that a memory bank actually gets read and written back.
  *
  * Every function here is *non-destructive by construction*: a marker that cannot be paired with

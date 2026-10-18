@@ -29,16 +29,16 @@ const mdTable = (rows: string[][]): string => {
 export function aiReadme(ctx: SkeletonContext): string {
   return `# .ai/ — project memory bank
 
-Portable, tool-independent memory for AI coding tools. Every supported tool (Claude Code, Codex,
-Pi, DeepSeek Harness, Cursor, Windsurf, Copilot, Gemini CLI, OpenCode, …) reads and writes **this
-same directory**, so switching tools never resets context.
+Portable, tool-independent memory for AI coding tools. Pi reads and writes **this directory**, and
+the \`.ai/\` contract is tool-agnostic: any agent that can read files can follow it, so switching
+tools never resets context.
 
 ## Layer model (how context is loaded)
 
 | Layer | What | Size rule | Loaded when |
 | --- | --- | --- | --- |
 | L0 dynamic injection | \`engram dump\` fingerprint | ≤ 1.5 KB / 300–500 tokens | every new session, pasted or injected |
-| L1 behaviour contract | \`AGENTS.md\` / \`CLAUDE.md\` / \`.cursor/rules/*.mdc\` … | < 2 KB | always, by the tool |
+| L1 behaviour contract | \`AGENTS.md\` | < 2 KB | always, by Pi |
 | L2 knowledge bank | this \`.ai/\` tree | unbounded | on demand, via file reads |
 | L3 action specs | \`.ai/skills/*.md\` | ~1 KB each | on trigger, via \`/handoff\`, \`/audit\`, … |
 
@@ -64,8 +64,8 @@ This directory is yours, not the tool's. Three zones decide what happens when yo
 | shared, you own the input | this whole \`.ai/\` tree, \`.ai/sections.json\`, \`.ai/skills/*.md\` | read, never clobbered |
 | yours alone | rule-file body above the contract, notes, anything outside the above | never touched |
 
-**A new partition.** Declare it in \`.ai/sections.json\` — then one edit teaches every tool about it,
-instead of you repeating a row in eight rule files that drift apart:
+**A new partition.** Declare it in \`.ai/sections.json\` — one edit puts it in the contract block
+that \`engram sync\` regenerates, instead of you hand-editing a machine-owned section:
 
 \`\`\`json
 {
@@ -92,7 +92,7 @@ already exists: a \`dir\` inside a built-in partition (\`decisions\`, \`sessions
 (\`decision\`, \`session\`, \`pitfall\`, \`runbook\`). Both warn and skip; nothing else is.
 
 **A new skill.** Drop \`.ai/skills/<name>.md\` with \`name\` and \`description\` frontmatter, run
-\`engram sync\`, and every tool gets its carrier. Delete the file and the carrier goes with it. A
+\`engram sync\`, and Pi's carriers follow. Delete the file and the carriers go with it. A
 file whose frontmatter is missing, uses a YAML block scalar (\`>\` / \`|\`), or whose \`name\`
 disagrees with the file name is reported and skipped — a skill that silently did not load is worse
 than one that loudly did not. Two things are skipped in silence, on purpose: a file starting with

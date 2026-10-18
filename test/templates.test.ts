@@ -17,10 +17,8 @@ import { parseCurrentTask } from '../src/core/memory.js';
 import { SKILL_SPECS, skillFile } from '../src/templates/skills.js';
 import { aiSkeleton } from '../src/commands/init.js';
 
-const AGENTS_RULE = { path: 'AGENTS.md', kind: 'agents' as const, note: 'test' };
-const CURSOR_RULE = { path: '.cursor/rules/engram-memory.mdc', kind: 'cursor' as const, note: 'test' };
-const WS_RULE = { path: '.windsurf/rules/engram-memory.md', kind: 'windsurf' as const, note: 'test' };
-const CTX = { projectName: 'demo', alsoReadBy: [] as string[] };
+const AGENTS_RULE = { path: 'AGENTS.md', note: 'test' };
+const CTX = { projectName: 'demo' };
 
 /** Replace the contract *body* while keeping both markers on their own lines — the realistic
  *  shape of "an older engram version wrote this" and of a hand-mangled block. */
@@ -98,14 +96,14 @@ test('REGRESSION a rule file documenting the markers in prose keeps its contract
   ].join('\n');
 
   assert.equal(inspectMarkers(documented).health, 'absent', 'prose mentions are not markers');
-  const rendered = renderRuleFile(AGENTS_RULE, { projectName: 'demo', alsoReadBy: ['pi'] }, documented);
+  const rendered = renderRuleFile(AGENTS_RULE, { projectName: 'demo' }, documented);
   assert.equal(rendered.health, 'ok', 'prose must not block the contract');
   assert.ok(rendered.content.includes(AI_CONTRACT), 'the contract must actually be written');
   assert.ok(rendered.content.includes('Never hand-edit it'), 'the human prose survives');
   assert.equal(inspectMarkers(rendered.content).health, 'balanced');
 
   // And it must survive a re-render unchanged.
-  assert.equal(renderRuleFile(AGENTS_RULE, { projectName: 'demo', alsoReadBy: ['pi'] }, rendered.content).content, rendered.content);
+  assert.equal(renderRuleFile(AGENTS_RULE, { projectName: 'demo' }, rendered.content).content, rendered.content);
 });
 
 test('markers inside a fenced code block are documentation, not the contract', () => {
@@ -150,43 +148,6 @@ test('inspectMarkers counts balanced pairs and flags both directions of breakage
   assert.equal(inspectMarkers(`a\n${CONTRACT_END}\nb`).health, 'unbalanced');
 });
 
-// ── frontmatter preservation ─────────────────────────────────────────────────
-
-test('REGRESSION a user rule narrowed to alwaysApply:false is not silently promoted', () => {
-  const userRule = [
-    '---',
-    'description: MY OWN RULE - do not touch',
-    'globs: "src/**"',
-    'alwaysApply: false',
-    '---',
-    '# My rule',
-    '',
-    'Keep this scope, it is deliberate.',
-    '',
-  ].join('\n');
-
-  const rendered = renderRuleFile(CURSOR_RULE, CTX, userRule);
-  assert.ok(rendered.content.includes('alwaysApply: false'), 'narrow scope must survive');
-  assert.ok(rendered.content.includes('globs: "src/**"'));
-  assert.ok(rendered.content.includes('Keep this scope'));
-  assert.ok(!rendered.content.includes('alwaysApply: true'));
-  assert.ok(rendered.content.startsWith('---'), 'frontmatter stays first');
-  assert.equal(rendered.content.split('\n---\n').length, 2, 'no nested frontmatter');
-});
-
-test('a frontmatter rule with no keys of its own gains engram defaults', () => {
-  const bare = '---\nalwaysApply: false\n---\n\n# only key\n';
-  const rendered = renderRuleFile(WS_RULE, CTX, bare);
-  assert.ok(rendered.content.includes('alwaysApply: false'));
-  assert.ok(rendered.content.includes('trigger: always_on'), 'missing key is filled in');
-});
-
-test('cursor alwaysApply rule does not carry ignored keys', () => {
-  const out = renderRuleFile(CURSOR_RULE, CTX);
-  assert.ok(out.content.startsWith('---\nalwaysApply: true\n---\n'));
-  assert.ok(!out.content.includes('globs:'), 'Cursor ignores globs when alwaysApply is set');
-});
-
 // ── rendering invariants ─────────────────────────────────────────────────────
 
 test('refreshContract is a no-op on a fresh file and repairs a damaged one', () => {
@@ -213,12 +174,22 @@ test('the managed marker survives a damaged contract repair', () => {
   assert.ok(repaired.content.includes(AI_CONTRACT));
 });
 
-test('renderRuleFile preserves an existing body but notes shared readers', () => {
+test('renderRuleFile preserves an existing body and installs the contract', () => {
   const existing = '# Existing\n\ndo not clobber me\n';
-  const out = renderRuleFile(AGENTS_RULE, { projectName: 'demo', alsoReadBy: ['codex', 'pi'] }, existing);
+  const out = renderRuleFile(AGENTS_RULE, { projectName: 'demo' }, existing);
   assert.ok(out.content.includes('do not clobber me'));
-  assert.match(out.content, /_Read by: codex, pi\._/);
   assert.ok(out.content.includes(AI_CONTRACT));
+});
+
+test('REGRESSION the multi-client shared-reader note is stripped on re-render', () => {
+  // Older versions appended `_Read by: codex, pi._` because several tools shared AGENTS.md. With one
+  // client the note has nothing to say, so a re-render must remove it rather than leave a line naming
+  // tools engram no longer installs for.
+  const stale = renderRuleFile(AGENTS_RULE, { projectName: 'demo' });
+  const withNote = `${stale.content}\n\n_Read by: codex, pi._\n`;
+  const out = renderRuleFile(AGENTS_RULE, { projectName: 'demo' }, withNote);
+  assert.ok(!out.content.includes('_Read by:'), 'the stale note is gone');
+  assert.equal(out.content.split(MANAGED_MARKER).length - 1, 1);
 });
 
 test('every rendered rule file carries the managed marker exactly once', () => {
@@ -238,43 +209,14 @@ test('re-rendering a managed rule file does not nest markers or contracts', () =
   assert.ok(second.includes(withoutContract(first).trim()), 'authored body survives every pass');
 });
 
-test('re-rendering a frontmatter file never duplicates its frontmatter', () => {
-  const first = renderRuleFile(CURSOR_RULE, CTX).content;
-  const second = renderRuleFile(CURSOR_RULE, CTX, first).content;
-  assert.equal(second, first);
-  assert.equal(second.split('alwaysApply: true').length - 1, 1);
-  assert.ok(second.startsWith('---\n'));
-});
-
-test('REGRESSION a rule file kind with no frontmatter does not accumulate duplicates', () => {
-  // `.github/copilot-instructions.md` is kind `copilot` but has no frontmatter, so its merge
-  // path produced an empty default. Returning the whole file there spliced a second copy of the
-  // body on every render: the managed marker went 1 -> 3 across a few `init` runs.
-  const rule = { path: '.github/copilot-instructions.md', kind: 'copilot' as const, note: 't' };
-  const first = renderRuleFile(rule, CTX).content;
-  const second = renderRuleFile(rule, CTX, first).content;
-  const third = renderRuleFile(rule, CTX, second).content;
-  assert.equal(second, first);
-  assert.equal(third, second);
-  assert.equal(second.split(MANAGED_MARKER).length - 1, 1);
-  assert.equal(second.split(CONTRACT_START).length - 1, 1);
-  assert.ok(second.split('\n# engram — agent instructions\n').length - 1 <= 1, 'body must not duplicate');
-  assert.ok(!second.startsWith('---\n'), 'no frontmatter is invented for this file');
-});
-
 test('every rule kind is stable across three render passes', () => {
   // A blunt net for the whole bug class: whatever the file kind, re-rendering is a no-op.
   const kinds = [
     { path: 'AGENTS.md', kind: 'agents' as const, note: 't' },
     { path: 'CLAUDE.md', kind: 'claude' as const, note: 't' },
-    { path: 'GEMINI.md', kind: 'gemini' as const, note: 't' },
-    { path: '.cursor/rules/x.mdc', kind: 'cursor' as const, note: 't' },
-    { path: '.windsurf/rules/x.md', kind: 'windsurf' as const, note: 't' },
-    { path: '.github/copilot-instructions.md', kind: 'copilot' as const, note: 't' },
-    { path: '.github/instructions/x.instructions.md', kind: 'copilot' as const, note: 't' },
   ];
   for (const kind of kinds) {
-    const ctx = { projectName: 'demo', alsoReadBy: ['pi'] };
+    const ctx = { projectName: 'demo' };
     const a = renderRuleFile(kind, ctx).content;
     const b = renderRuleFile(kind, ctx, a).content;
     const c = renderRuleFile(kind, ctx, b).content;
@@ -286,12 +228,12 @@ test('every rule kind is stable across three render passes', () => {
   }
 });
 
-test('shared-reader notes appear once no matter how often init runs', () => {
-  const ctx = { projectName: 'demo', alsoReadBy: ['codex', 'pi'] };
+test('re-rendering is a no-op and never adds a shared-reader note', () => {
+  const ctx = { projectName: 'demo' };
   const first = renderRuleFile(AGENTS_RULE, ctx).content;
   const second = renderRuleFile(AGENTS_RULE, ctx, first).content;
   assert.equal(second, first);
-  assert.equal(second.split('_Read by:').length - 1, 1);
+  assert.ok(!second.includes('_Read by:'));
 });
 
 // ── canonical skills and skeleton ────────────────────────────────────────────

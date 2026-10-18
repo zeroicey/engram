@@ -16,7 +16,6 @@ export interface FingerprintOptions {
   /** Project label shown in the header. */
   projectName?: string;
 }
-
 export interface Fingerprint {
   markdown: string;
   bytes: number;
@@ -33,6 +32,15 @@ export interface Fingerprint {
     sessions: Array<{ date: string; title: string; file: string }>;
     pitfalls: Array<{ title: string; severity: string; file: string }>;
     skills: string[];
+    /** The live goal, when the project has one. Distinct from `goal`, which is CURRENT_TASK's prose. */
+    activeGoal: {
+      id: string;
+      status: string;
+      text: string;
+      verdict: string;
+      blocked: string | null;
+      waitingUntil: string | null;
+    } | null;
     bytes: number;
     truncated: boolean;
   };
@@ -113,6 +121,29 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
     ...proposals.map((d) => `  ${MARK.PROPOSAL} ${d.date} ${trimTo(d.title, 70)} [proposal: needs verdict]`),
     ...accepted.map((d) => `  ${MARK.ACCEPTED} ${d.date} ${trimTo(d.title, 70)}`),
   ];
+
+  // The live goal outranks everything but NOW. A fresh session that does not learn it is the baton
+  // holder will start an unrelated task in the middle of someone's twenty-round run, and a parked
+  // goal in `waiting` is indistinguishable from an abandoned one without its deadline.
+  const goal = bank.goal;
+  if (goal) {
+    const g = goal.record;
+    const goalLines = [
+      `  id: ${g.id} · ${g.status}${g.closedAt ? ` (${g.closeReason})` : ''} · ${g.rounds} rounds`,
+      `  goal: ${trimTo(g.goal, 100)}`,
+    ];
+    if (g.blocker) goalLines.push(`  blocked: ${trimTo(`${g.blocker.reason}${g.blocker.needs ? ` — needs ${g.blocker.needs}` : ''}`, 80)}`);
+    if (g.wake) goalLines.push(`  waiting since ${g.wake.requestedAt} · deadline ${g.wake.deadlineAt}`);
+    if (goal.brief.error) goalLines.push(`  verdict: ⚠ ${trimTo(goal.brief.error, 90)}`);
+    else if (goal.brief.doneWhen === null) goalLines.push('  verdict: not declared — classify before working');
+    else goalLines.push(`  verdict: ${trimTo(describeVerdict(goal.brief.doneWhen), 90)}`);
+    // Pushed before BINDING: the render order is the priority order, and an active goal is the one
+    // thing a fresh session must not miss. A 0.5 priority alone would not do it — `fitToBudget` drops
+    // whole tiers when the budget is tight, and a `sections.push` after BINDING would have rendered
+    // the goal *below* the decisions it outranks.
+    sections.push({ heading: 'GOAL', lines: goalLines, priority: 0.5 });
+  }
+
   if (decisionLines.length) sections.push({ heading: 'BINDING', lines: decisionLines, priority: 1 });
 
   if (sessions.length) {
@@ -157,7 +188,7 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
 
   const header = (): string[] => [
     `# engram v1 · ${project} · ${generated.slice(0, 10)}`,
-    'Read .ai/CURRENT_TASK.md first. Follow the rule file (AGENTS.md/CLAUDE.md/…) for the full contract.',
+    'Read .ai/CURRENT_TASK.md first. Follow AGENTS.md for the full contract.',
   ];
 
   const fitted = fitToBudget(header, sections, maxBytes);
@@ -189,6 +220,16 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
         file: `.ai/pitfalls/cases/${p.file}`,
       })),
       skills: bank.skills.map((s) => `/${s.replace(/\.md$/, '')}`),
+      activeGoal: goal
+        ? {
+            id: goal.id,
+            status: goal.record.status,
+            text: goal.record.goal,
+            verdict: goal.brief.doneWhen ? describeVerdict(goal.brief.doneWhen) : (goal.brief.error ?? 'not declared'),
+            blocked: goal.record.blocker?.reason ?? null,
+            waitingUntil: goal.record.wake?.deadlineAt ?? null,
+          }
+        : null,
       bytes,
       truncated: fitted.truncated,
     },
@@ -197,9 +238,18 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
 
 /**
  * Priorities whose sections may be dropped or shortened when the byte budget is tight, in drop
- * order. 3.5 is the declared-sections continuation: least important, so it goes first.
+ * order. 3.5 is the declared-sections continuation: least important, so it goes first; 0.5 is the
+ * live goal, which outlives the binding decisions but yields to NOW and POINTERS.
  */
-const ELASTIC_PRIORITIES = [3.5, 3, 2, 1];
+const ELASTIC_PRIORITIES = [3.5, 3, 2, 1, 0.5];
+
+/** One line describing how a goal will be judged, for the GOAL block. */
+function describeVerdict(doneWhen: NonNullable<MemoryBank['goal']>['brief']['doneWhen']): string {
+  if (doneWhen === null) return 'not declared';
+  if (doneWhen.kind === 'cmd') return `cmd: ${doneWhen.commands.join(' && ')}`;
+  if (doneWhen.kind === 'metric') return `metric: ${doneWhen.file}:${doneWhen.path} ${doneWhen.op} ${String(doneWhen.value)}`;
+  return `checklist: ${doneWhen.file}`;
+}
 
 /**
  * Render sections into at most `maxBytes` UTF-8 bytes.

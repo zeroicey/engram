@@ -1,18 +1,29 @@
 import path from 'node:path';
-import { TOOLS, getTool } from '../adapters/index.js';
-import { pathExists, readFileSafe, writeFile } from './project.js';
+import { readFileSafe, writeFile } from './project.js';
 
 /**
- * `.engram/config.json` — what `init` was told to configure.
+ * `.engram/config.json` — project-local settings.
  *
- * Without it, `engram sync` had no memory of the user's choice and defaulted to *every* supported
- * tool: one sync wrote 32 carrier files, inventing `.gemini/commands`, `.windsurf/rules` and a
- * second `.pi/skills` copy for tools the project never opted into. The bank is supposed to be the
- * thing that survives; the tool set has to survive with it.
+ * This file used to record *which tools* the project chose, because engram supported nine and
+ * `sync` had no other way to know which carriers to write: without it one sync wrote 32 carrier
+ * files, inventing `.gemini/commands` and a colliding `.pi/skills` copy for a repo that had asked
+ * for one agent.
+ *
+ * Since 2026-10-18 engram supports exactly one tool (`pi`), so a `tools: ["pi"]` array would be a
+ * list with one legal value — an extensibility story the product no longer tells. It is gone, and
+ * `version: 1` files are still read: their `tools` key is ignored, which is the whole migration.
+ *
+ * What remains is the one thing that is genuinely per-project: the goal opt-in.
  */
 export interface EngramConfig {
-  version: 1;
-  tools: string[];
+  version: 2;
+  /**
+   * Opt-in executable behaviour.
+   *
+   * The goal engine runs code at every settlement boundary, so it is off unless a project asks —
+   * separate from tool support, which is not a choice any more.
+   */
+  goal?: { enabled: boolean };
 }
 
 export const CONFIG_PATH = '.engram/config.json';
@@ -23,50 +34,59 @@ function parseConfig(raw: string | null): EngramConfig | null {
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return null;
     const version = (parsed as { version?: unknown }).version;
-    const tools = (parsed as { tools?: unknown }).tools;
-    if (version !== 1 || !Array.isArray(tools)) return null;
-    const ids = tools.filter((t): t is string => typeof t === 'string' && getTool(t) !== undefined);
-    if (ids.length === 0) return null;
-    return { version: 1, tools: [...new Set(ids)] };
+    if (version !== 1 && version !== 2) return null;
+    // An unknown `goal` shape is dropped rather than treated as `true`: a typo must never enable a
+    // lifecycle hook the project did not ask for.
+    const goalRaw = (parsed as { goal?: unknown }).goal;
+    const goal =
+      typeof goalRaw === 'object' && goalRaw !== null && (goalRaw as { enabled?: unknown }).enabled === true
+        ? { enabled: true }
+        : { enabled: false };
+    // A v1 file is accepted as-is: `tools` carries no information a Pi-only engram can use, and
+    // refusing the file would also drop the `goal` opt-in next to it.
+    return { version: 2, goal };
   } catch {
-    // A hand-edited or truncated config must never break sync; it only costs the recorded scope.
+    // A hand-edited or truncated config must never break sync; it only costs the goal opt-in.
     return null;
   }
+}
+
+/** Whether this project opted into the goal engine. Absent config means no. */
+export function goalEnabled(config: EngramConfig | null): boolean {
+  return config?.goal?.enabled === true;
 }
 
 export async function readConfig(root: string): Promise<EngramConfig | null> {
   return parseConfig(await readFileSafe(path.join(root, CONFIG_PATH)));
 }
 
-export async function writeConfig(root: string, tools: string[]): Promise<void> {
-  const ids = [...new Set(tools.filter((id) => getTool(id) !== undefined))];
-  if (ids.length === 0) return;
-  await writeFile(path.join(root, CONFIG_PATH), `${JSON.stringify({ version: 1, tools: ids }, null, 2)}\n`);
+export async function writeConfig(root: string, goal = false): Promise<void> {
+  const payload: EngramConfig = { version: 2, ...(goal ? { goal: { enabled: true } } : {}) };
+  await writeFile(path.join(root, CONFIG_PATH), `${JSON.stringify(payload, null, 2)}\n`);
 }
 
 /**
- * Tool ids a pre-config repository already looks like it uses.
+ * Is the file a v1 one that still lists tools?
  *
- * Repos initialised before the config file existed have no recorded scope; re-guessing "every
- * tool" would keep the sync-everything behaviour that produced the collision, and re-guessing
- * nothing would silently drop carriers. Presence of a tool's rule file *or* one of its carrier
- * dirs is the evidence a human already chose it.
+ * `sync` rewrites it, so a project that upgraded does not keep a `tools` array naming six clients
+ * engram can no longer install for. The information is unused either way — what matters is that the
+ * file on disk stops disagreeing with `engram config`.
  */
-export async function inferToolsFromDisk(root: string): Promise<string[]> {
-  const found: string[] = [];
-  for (const tool of TOOLS) {
-    const paths = [...tool.ruleFiles.map((f) => f.path), ...tool.skillSinks.map((s) => s.dir)];
-    for (const rel of paths) {
-      if (await pathExists(path.join(root, rel))) {
-        found.push(tool.id);
-        break;
-      }
-    }
+export async function isLegacyConfig(root: string): Promise<boolean> {
+  const raw = await readFileSafe(path.join(root, CONFIG_PATH));
+  if (raw === null) return false;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return false;
+    const version = (parsed as { version?: unknown }).version;
+    const tools = (parsed as { tools?: unknown }).tools;
+    return version === 1 || Array.isArray(tools);
+  } catch {
+    return false;
   }
-  return found;
 }
 
-/** Drop ids a newer engram no longer knows (tool removed, typo in config). */
-export function knownTools(ids: string[]): string[] {
-  return ids.filter((id) => getTool(id) !== undefined);
+/** Flip the goal opt-in, preserving nothing else — there is nothing else. */
+export async function setGoalEnabled(root: string, enabled: boolean): Promise<void> {
+  await writeConfig(root, enabled);
 }

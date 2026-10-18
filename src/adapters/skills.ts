@@ -4,13 +4,24 @@ import type { SkillSource } from '../templates/skills.js';
 import type { SkillSink } from './index.js';
 import { generatedHeader } from './rules.js';
 
+/**
+ * Two carriers, and that is the whole surface since the 2026-10-18 reduction.
+ *
+ * - `agent-skills` — the Agent Skills standard (`<name>/SKILL.md` with YAML frontmatter), read by Pi
+ *   from `.agents/skills`.
+ * - `prompt-md-args` — a Markdown slash command with `description` + `argument-hint` frontmatter and
+ *   Pi's `$ARGUMENTS` placeholder.
+ *
+ * A third (`prompt-toml`, for Gemini CLI) and a `copilot` frontmatter dialect were deleted with
+ * their adapters rather than left as unreachable branches: a renderer no selected tool can reach is
+ * a place for a future bug to hide, and the tests that covered them covered nothing shipped.
+ */
+
 export interface MaterializedFile {
   /** Path relative to the project root. */
   path: string;
   content: string;
 }
-
-const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
 /** Frontmatter + body of a canonical skill, used verbatim for Agent Skills dirs. */
 function agentSkillFile(spec: SkillSource, sourcePath: string): string {
@@ -18,20 +29,15 @@ function agentSkillFile(spec: SkillSource, sourcePath: string): string {
   return `${header}\n\n${generatedHeader(sourcePath)}\n\n${spec.body.trim()}\n`;
 }
 
-/** Slash-command template: `ARGUMENTS` placeholder becomes the tool's own syntax. */
-function promptTemplate(spec: SkillSource, sourcePath: string, frontmatter: 'slash' | 'copilot'): string {
-  // Copilot prompt files use VS Code variable syntax, not `$ARGUMENTS`; shipping the literal
-  // token would hand the model a garbled instruction instead of an argument.
-  const body = substituteArgs(spec.body, frontmatter === 'copilot' ? '${input:arguments}' : '$ARGUMENTS');
-  const fm =
-    frontmatter === 'copilot'
-      ? ['---', 'agent: agent', `description: ${yamlScalar(spec.description)}`, '---'].join('\n')
-      : [
-          '---',
-          `description: ${yamlScalar(spec.description)}`,
-          `argument-hint: ${yamlScalar(spec.argumentHint ?? 'arguments')}`,
-          '---',
-        ].join('\n');
+/** Markdown slash command: the delimited placeholder becomes the tool's own argument syntax. */
+function promptTemplate(spec: SkillSource, sourcePath: string): string {
+  const body = substituteArgs(spec.body, '$ARGUMENTS');
+  const fm = [
+    '---',
+    `description: ${yamlScalar(spec.description)}`,
+    `argument-hint: ${yamlScalar(spec.argumentHint ?? 'arguments')}`,
+    '---',
+  ].join('\n');
   return `${fm}\n\n${generatedHeader(sourcePath)}\n\n${body}\n`;
 }
 
@@ -45,31 +51,17 @@ function promptTemplate(spec: SkillSource, sourcePath: string, frontmatter: 'sla
 export const substituteArgs = (body: string, token: string): string =>
   body.replaceAll('<ARGUMENTS>', token);
 
-function tomlEscape(body: string): string {
-  return body.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
-}
-
-function geminiCommand(spec: SkillSource, sourcePath: string): string {
-  const body = tomlEscape(substituteArgs(spec.body, '{{args}}'));
-  return [
-    `# ${generatedHeader(sourcePath)}`,
-    `description = "${oneLine(spec.description).replace(/"/g, '\\"')}"`,
-    '',
-    'prompt = """',
-    body,
-    '"""',
-    '',
-  ].join('\n');
-}
-
-/** Human-facing name of the command this sink produces, for init output. */
+/**
+ * Human-facing name of the command this sink produces, for init output.
+ *
+ * Pi invokes an Agent Skill as `/skill:<name>` and a prompt template as `/<name>`. The per-tool
+ * `invoke` override it used to consult existed for Claude Code and Codex, both removed.
+ */
 export function commandNameFor(sink: SkillSink, spec: SkillSource): string {
   switch (sink.kind) {
     case 'agent-skills':
-      return sink.invoke === 'plain' ? `/${spec.name}` : `/skill:${spec.name}`;
+      return `/skill:${spec.name}`;
     case 'prompt-md-args':
-      return `/${sink.prefix ?? ''}${spec.name}`;
-    case 'prompt-toml':
       return `/${spec.name}`;
   }
 }
@@ -83,11 +75,9 @@ export function materialize(sink: SkillSink, specs: SkillSource[], sourceDir = '
         return { path: path.posix.join(sink.dir, spec.name, 'SKILL.md'), content: agentSkillFile(spec, sourcePath) };
       case 'prompt-md-args':
         return {
-          path: path.posix.join(sink.dir, `${sink.prefix ?? ''}${spec.name}${sink.suffix ?? '.md'}`),
-          content: promptTemplate(spec, sourcePath, sink.frontmatter ?? 'slash'),
+          path: path.posix.join(sink.dir, `${spec.name}.md`),
+          content: promptTemplate(spec, sourcePath),
         };
-      case 'prompt-toml':
-        return { path: path.posix.join(sink.dir, `${spec.name}.toml`), content: geminiCommand(spec, sourcePath) };
     }
   });
 }

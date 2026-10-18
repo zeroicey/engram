@@ -20,11 +20,9 @@ import { validateFrontmatter } from '../src/core/yaml.js';
  */
 
 const SINK_KINDS = [
-  { kind: 'agent-skills', dir: '.pi/skills' },
+  { kind: 'agent-skills', dir: '.agents/skills' },
+  { kind: 'agent-skills', dir: '.claude/skills' },
   { kind: 'prompt-md-args', dir: '.pi/prompts' },
-  { kind: 'prompt-md-args', dir: '.claude/commands' },
-  { kind: 'prompt-md-args', dir: '.github/prompts', suffix: '.prompt.md', frontmatter: 'copilot' },
-  { kind: 'agent-skills', dir: '.cursor/skills' },
 ] as const;
 
 function frontmatterOf(content: string): string {

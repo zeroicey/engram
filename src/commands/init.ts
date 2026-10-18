@@ -13,10 +13,12 @@ import {
 } from '../templates/ai-files.js';
 import { SKILL_SPECS, skillFile } from '../templates/skills.js';
 import { buildBootstrapPrompt, toolSummary } from '../templates/meta-prompt.js';
-import { getTool, ruleFilesFor, allToolIds, type ToolDef } from '../adapters/index.js';
+import { TOOLS, ruleFiles, RETIRED_RULE_FILES, type ToolDef } from '../adapters/index.js';
 import { commandNameFor, materialize } from '../adapters/skills.js';
 import { pruneStaleCarriers } from './prune-carriers.js';
-import { CONFIG_PATH, inferToolsFromDisk, knownTools, readConfig, writeConfig } from '../core/config.js';
+import { syncGoalCarrier, type GoalCarrierResult } from './goal-carrier.js';
+import { CONFIG_PATH, goalEnabled, isLegacyConfig, readConfig, writeConfig } from '../core/config.js';
+import { VERSION } from '../version.js';
 import { renderRuleFile, refreshContract } from '../adapters/rules.js';
 import {
   detectProject,
@@ -35,7 +37,6 @@ import type { ContractExtensions, ContractRow } from '../templates/contract.js';
 
 export interface InitOptions {
   root: string;
-  toolIds: string[];
   notes?: string;
   /** Overwrite generated rule files instead of preserving existing bodies. */
   force?: boolean;
@@ -112,13 +113,9 @@ async function writeGenerated(
 
 export async function runInit(opts: InitOptions): Promise<InitResult> {
   const warnings: string[] = [];
-  const unknown = opts.toolIds.filter((id) => !getTool(id));
-  for (const id of unknown) warnings.push(`Unknown tool "${id}" — ignored.`);
-
-  const tools = opts.toolIds.map(getTool).filter((t): t is ToolDef => Boolean(t));
-  if (tools.length === 0) {
-    warnings.push('No valid tools selected — the .ai/ bank was created, but no rule file was written.');
-  }
+  // One tool, from the registry. There is no selection step any more: `--tools` was removed with the
+  // other eight adapters, and a flag whose only legal value is "pi" is noise in `--help`.
+  const tools = [...TOOLS];
   // Project-owned input: engram reads it and never writes it, so a bad declaration degrades to a
   // warning instead of blocking the run.
   const { sections, warnings: sectionWarnings } = await readSections(opts.root);
@@ -133,13 +130,10 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     files.push({ path: f.path, action: await writeNeverClobber(opts.root, f.path, f.content, dryRun) });
   }
 
-  for (const { toolId, def } of ruleFilesFor(tools.map((t) => t.id))) {
+  for (const def of ruleFiles()) {
     const abs = path.join(opts.root, def.path);
     const existing = await readFileSafe(abs);
-    const alsoReadBy = tools
-      .filter((t) => t.id !== toolId && t.ruleFiles.some((f) => f.path === def.path))
-      .map((t) => t.id);
-    const ctxRender = { projectName: facts.name, alsoReadBy, extensions };
+    const ctxRender = { projectName: facts.name, extensions };
 
     if (opts.force) {
       // --force means "regenerate from the stub": the previous content is intentionally discarded.
@@ -171,14 +165,12 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const bootstrapPath = '.engram/BOOTSTRAP.md';
   files.push({ path: bootstrapPath, action: await writeGenerated(opts.root, bootstrapPath, bootstrap, dryRun) });
 
-  // The tool set is a user decision; `sync` must inherit it instead of re-deciding "all tools".
-  // Written through `writeGenerated` alone: a second `writeConfig` call would turn the very
-  // first init into a `kept` action and make "everything is created" untrue.
-  const toolIds = tools.map((t) => t.id);
-  if (toolIds.length > 0) {
-    const content = `${JSON.stringify({ version: 1, tools: toolIds }, null, 2)}\n`;
-    files.push({ path: CONFIG_PATH, action: await writeGenerated(opts.root, CONFIG_PATH, content, dryRun) });
-  }
+  // The config records only the goal opt-in now. Written through `writeGenerated` alone: a second
+  // `writeConfig` call would turn the very first init into a `kept` action and make "everything is
+  // created" untrue. An existing config is preserved as-is, so a project's `goal.enabled` survives
+  // a re-init.
+  const content = `${JSON.stringify({ version: 2 }, null, 2)}\n`;
+  files.push({ path: CONFIG_PATH, action: await writeGenerated(opts.root, CONFIG_PATH, content, dryRun) });
 
   if (facts.existingRuleFiles.length && !opts.force) {
     warnings.push(
@@ -247,9 +239,16 @@ export async function materializeSkillSinks(
   const refused: string[] = [];
   const resolved = withBuiltinArgumentHints(skills);
   if (resolved.length === 0) return { written, refused };
+  // De-duplicated by path, because `.agents/skills` is claimed by two tools at once. Codex and Pi
+  // both read it, so a project selecting both used to render every SKILL.md twice: identical
+  // content, one wasted write per file, and a doubled count in `sync`'s "N skill files
+  // materialised" line. The first claiming tool wins; the content does not depend on which.
+  const seen = new Set<string>();
   for (const tool of tools) {
     for (const sink of tool.skillSinks) {
       for (const file of materialize(sink, resolved)) {
+        if (seen.has(file.path)) continue;
+        seen.add(file.path);
         if (!dryRun && !(await writeFileGuarded(root, path.join(root, file.path), file.content))) {
           // A symlinked carrier directory is a real setup (people redirect generated dirs into a
           // shared location). Refusing to write is the only safe answer, but it must be loud.
@@ -268,56 +267,20 @@ export interface SyncResult {
   skills: string[];
   missingSkills: string[];
   warnings: string[];
-  /** Generated carriers removed because the recorded tool set no longer claims their dir. */
+  /** Generated carriers removed because engram no longer writes that dir. */
   pruned: string[];
-  /** Where the tool scope came from: config, disk inference, or an explicit flag. */
-  scope: 'config' | 'inferred' | 'flags' | 'all-tools';
   /** True when the repository has never been initialised. */
   needsInit: boolean;
   /** Section names declared in `.ai/sections.json`, for reporting. */
   declaredSections: string[];
+  /** The opt-in pi goal extension: what happened to `.pi/extensions/engram-goal.ts`. */
+  goalCarrier: GoalCarrierResult;
+  /** True when `.engram/config.json` opted into the goal engine. */
+  goalEnabled: boolean;
 }
 
-/**
- * Which tools this sync is allowed to write.
- *
- * Precedence: explicit `--tools`, then `--all`, then the set recorded by `init`, then what the
- * disk already looks like. Only when nothing at all is on disk does it fall back to every tool —
- * and that fallback is what used to run unconditionally, silently generating carriers for eight
- * agents in a repo that asked for one.
- */
-export async function resolveSyncTools(
-  root: string,
-  explicit: string[],
-  dryRun = false,
-): Promise<{ toolIds: string[]; scope: SyncResult['scope'] }> {
-  if (explicit.length > 0) return { toolIds: knownTools(explicit), scope: 'flags' };
-  const config = await readConfig(root);
-  if (config) return { toolIds: config.tools, scope: 'config' };
-  const inferred = await inferToolsFromDisk(root);
-  if (inferred.length > 0) {
-    if (!dryRun) await writeConfig(root, inferred);
-    return { toolIds: inferred, scope: 'inferred' };
-  }
-  return { toolIds: allToolIds(), scope: 'all-tools' };
-}
-
-export async function runSync(root: string, toolIds: string[] = [], dryRun = false, all = false): Promise<SyncResult> {
+export async function runSync(root: string, dryRun = false): Promise<SyncResult> {
   const warnings: string[] = [];
-  const unknown = toolIds.filter((id) => !getTool(id));
-  for (const id of unknown) warnings.push(`Unknown tool "${id}" — ignored.`);
-  if (toolIds.length > 0 && toolIds.length === unknown.length) {
-    return {
-      ruleFiles: [],
-      skills: [],
-      missingSkills: [],
-      pruned: [],
-      warnings,
-      scope: 'flags',
-      needsInit: true,
-      declaredSections: [],
-    };
-  }
 
   // `loadMemory` is no longer needed here: both facts this used to supply (`bank.exists` and the
   // skill list) are now cheaper and more honest as direct checks — `needsInit` is "does `.ai/`
@@ -327,31 +290,33 @@ export async function runSync(root: string, toolIds: string[] = [], dryRun = fal
   const { skills, warnings: skillWarnings, authoritative, unresolved } = await readSkillSources(root);
   warnings.push(...sectionWarnings, ...skillWarnings);
   const extensions = contractExtensions(sections);
-  const resolved = all
-    ? { toolIds: allToolIds(), scope: 'all-tools' as const }
-    : await resolveSyncTools(root, toolIds, dryRun);
-  if (toolIds.length === 0 && resolved.toolIds.length === 0) {
-    warnings.push('No valid tools recorded — pass --tools or run `engram init` again.');
+  // One tool. There is no scope to resolve: `sync` writes what the registry declares, and a stored
+  // tool set from an older engram is meaningless rather than wrong.
+  const tools: ToolDef[] = [...TOOLS];
+  const ruleFilesResult: SyncResult['ruleFiles'] = [];
+  const legacy = await isLegacyConfig(root);
+  if (legacy && !dryRun) {
+    // A v1 config naming six clients is rewritten to v2 while preserving the goal opt-in; otherwise
+    // the file keeps claiming tools engram cannot install for and `engram config` contradicts it.
+    await writeConfig(root, goalEnabled(await readConfig(root)));
   }
-  const tools = resolved.toolIds.map(getTool).filter((t): t is ToolDef => Boolean(t));
-  const ruleFiles: SyncResult['ruleFiles'] = [];
 
-  for (const { def } of ruleFilesFor(tools.map((t) => t.id))) {
+  for (const def of ruleFiles()) {
     const abs = path.join(root, def.path);
     const existing = await readFileSafe(abs);
     if (existing === null) {
       // Reporting "unchanged" for a file that does not exist is a lie an agent will believe.
-      ruleFiles.push({ path: def.path, action: 'missing' });
+      ruleFilesResult.push({ path: def.path, action: 'missing' });
       continue;
     }
     const next = refreshContract(existing, def, extensions);
     if (next.health !== 'ok') {
       warnings.push(`${def.path}: ${next.note ?? 'left untouched'}`);
-      ruleFiles.push({ path: def.path, action: 'skipped' });
+      ruleFilesResult.push({ path: def.path, action: 'skipped' });
       continue;
     }
     if (next.content !== existing && !dryRun) await writeFile(abs, next.content);
-    ruleFiles.push({ path: def.path, action: next.content === existing ? 'unchanged' : 'updated' });
+    ruleFilesResult.push({ path: def.path, action: next.content === existing ? 'unchanged' : 'updated' });
   }
 
   const { written, refused } = await materializeSkillSinks(root, skills, tools, dryRun);
@@ -371,18 +336,36 @@ export async function runSync(root: string, toolIds: string[] = [], dryRun = fal
   const missing = SKILL_SPECS.filter((s) => !skills.some((x) => x.name === s.name)).map((s) => s.name);
   if (needsInit) warnings.push('No .ai/ memory bank here — run `engram init` first.');
   else if (!authoritative) warnings.push(`Cannot read ${SKILLS_DIR}/ — carriers left alone (pruning needs a readable source of truth).`);
-  if (resolved.scope === 'inferred') {
-    warnings.push(`No ${CONFIG_PATH} yet — recorded the tool set found on disk: ${resolved.toolIds.join(', ')}.`);
+  // The goal engine is opt-in: it runs code at every settlement boundary, so it is a separate
+  // consent from tool support — which, being Pi-only, is no longer a consent at all.
+  const wantsGoal = goalEnabled(await readConfig(root));
+  const goalCarrier = await syncGoalCarrier(
+    root,
+    wantsGoal,
+    { engramBin: 'engram', version: VERSION },
+    dryRun,
+  );
+  if (goalCarrier.note) warnings.push(`${goalCarrier.path}: ${goalCarrier.note}`);
+
+  // Rule files left behind by a removed adapter are reported, not deleted: `init` preserves whatever
+  // body a human added, so there is no marker that would make deletion safe. Silence would be worse
+  // than either — the file keeps injecting a contract block that this `sync` no longer refreshes.
+  for (const rel of RETIRED_RULE_FILES) {
+    if (await pathExists(path.join(root, rel))) {
+      warnings.push(`${rel}: belongs to a tool engram no longer supports; its contract block is no longer refreshed — delete it if unused`);
+    }
   }
+
   return {
-    ruleFiles,
+    ruleFiles: ruleFilesResult,
     skills: written,
     missingSkills: missing,
     pruned,
     warnings,
-    scope: resolved.scope,
     needsInit,
     declaredSections: sections.map((s) => s.name),
+    goalCarrier,
+    goalEnabled: wantsGoal,
   };
 }
 

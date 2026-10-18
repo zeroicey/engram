@@ -1,43 +1,38 @@
 /**
- * Cross-tool adapter registry.
+ * The adapter registry — one entry, Pi.
  *
- * Each entry describes how one AI coding tool consumes rules and skills. `engram` never
- * hardcodes a single house style: it (a) materialises the `.ai/` contract into every
- * tool-native rule file and (b) emits a meta-prompt telling the user's own AI assistant to
- * author the tool-idiomatic remainder.
+ * This file used to describe nine tools. It now describes one, and that is a product decision with
+ * a recorded history: `.ai/decisions/2026-10-18-reduce-supported-clients-to-pi-claude-code-and-codex.md`
+ * cut nine to three, and `.ai/decisions/2026-10-18-serve-pi-only.md` cut three to one.
+ *
+ * The registry shape is kept rather than inlined into `init` for one reason: **adding a client is a
+ * decision, not an edit.** `test/adapters.test.ts` asserts this array has exactly one entry and that
+ * it is `pi`, so a second adapter cannot appear without a new decision file — which is the review
+ * step that the previous nine adapters never had, and the reason six of them shipped stale claims.
  */
-
-export type RuleFileKind = 'agents' | 'claude' | 'cursor' | 'windsurf' | 'copilot' | 'gemini';
 
 /** Where a canonical skill spec (`.ai/skills/<name>.md`) gets materialised. */
 export type SkillSink =
   | {
+      /**
+       * The Agent Skills standard: `<dir>/<name>/SKILL.md`. Pi invokes one as `/skill:<name>`.
+       */
       kind: 'agent-skills';
       dir: string;
-      /** How the tool exposes the command: Pi uses `/skill:name`, Claude/Cursor use `/name`. */
-      invoke?: 'skill-prefixed' | 'plain';
       note?: string;
     }
   | {
+      /** A Markdown slash command: `<dir>/<name>.md` with `description` + `argument-hint`. */
       kind: 'prompt-md-args';
       dir: string;
-      prefix?: string;
-      /** Filename suffix. Copilot requires `<name>.prompt.md`; a bare `.md` is not registered. */
-      suffix?: string;
-      /** `slash` → description + argument-hint; `copilot` → agent + description. */
-      frontmatter?: 'slash' | 'copilot';
       note?: string;
-    }
-  | { kind: 'prompt-toml'; dir: string; note?: string };
+    };
 
 export interface RuleFileDef {
   /** Path relative to the project root. */
   path: string;
-  kind: RuleFileKind;
-  /** Why this file exists for that tool, shown in the meta-prompt. */
+  /** Why this file exists, shown in the meta-prompt. */
   note: string;
-  /** Tool-native import lines that pull in memory without duplicating it. */
-  imports?: string[];
 }
 
 export interface ToolDef {
@@ -55,279 +50,98 @@ export interface ToolDef {
 
 export const TOOLS: ToolDef[] = [
   {
-    id: 'agents',
-    label: 'AGENTS.md (Codex, OpenCode, Cline, Amp, Zed, Aider …)',
-    detect: ['AGENTS.md', 'AGENTS.override.md', '.codex', '.opencode', '.aider.conf.yml'],
-    ruleFiles: [
-      {
-        path: 'AGENTS.md',
-        kind: 'agents',
-        note: 'The vendor-neutral contract honoured by most non-Anthropic agents.',
-      },
-    ],
-    skillSinks: [
-      {
-        kind: 'agent-skills',
-        dir: '.agents/skills',
-        note: 'Agent Skills standard directory — portable, recognised by several agents.',
-      },
-    ],
-    styleGuide: `- Imperative, second-person-free prose. "Run \`npm test\`, do not skip typecheck."
-- Order by frequency: build/run/test commands first, then conventions, then workflows.
-- Reference real paths and real commands. Never describe code you have not read.
-- Keep it under ~200 lines. Long documents are skimmed; short ones are followed.
-- Scope narrowing is done by adding \`AGENTS.md\` files in subdirectories, not by growing the root file.`,
-  },
-  {
-    id: 'codex',
-    label: 'OpenAI Codex CLI',
-    detect: ['.codex', 'AGENTS.md'],
-    ruleFiles: [
-      {
-        path: 'AGENTS.md',
-        kind: 'agents',
-        note: 'Codex reads AGENTS.md from the repo root downwards.',
-      },
-    ],
-    skillSinks: [
-      {
-        kind: 'agent-skills',
-        dir: '.agents/skills',
-        invoke: 'plain',
-        note: 'Codex scans `.agents/skills` from cwd up to the repo root (same dir as the `agents` tool); a skill is invoked by naming it with `$`, not `/`.',
-      },
-    ],
-    notes: [
-      'Codex supports project skills under `.agents/skills/`; the shared dir dedupes with the `agents` tool.',
-      'User-level `~/.codex/prompts/<name>.md` still works but is deprecated in favour of skills.',
-      'Say explicitly in AGENTS.md which commands need network/elevated sandbox; Codex sandboxes by default.',
-    ],
-    styleGuide: `- Lead with the sandbox model: what Codex may run without approval, what needs it.
-- Give copy-pasteable commands for build, test, lint, and "how to run just one test file".
-- State the failure-handling contract: never commit secrets, never rewrite \`.ai/\` history, ask before force-push.
-- Reference \`.ai/\` triggers exactly as the contract block does; Codex follows them literally.`,
-  },
-  {
-    id: 'claude',
-    label: 'Claude Code',
-    detect: ['CLAUDE.md', '.claude'],
-    ruleFiles: [
-      {
-        path: 'CLAUDE.md',
-        kind: 'claude',
-        note: 'Primary context file. Personal overrides belong in CLAUDE.local.md (gitignored).',
-      },
-    ],
-    skillSinks: [
-      {
-        kind: 'agent-skills',
-        dir: '.claude/skills',
-        invoke: 'plain',
-        note: 'Native Agent Skills, invoked as /<name>.',
-      },
-      // No `.claude/commands` sink on purpose: when a skill and a command share a name the skill
-      // wins, so the command file would be a permanently shadowed dead file.
-    ],
-    styleGuide: `- Concise and imperative; Claude follows short checklists better than prose essays.
-- Do NOT @-import \`.ai/\` files: an import is loaded in full every session, which contradicts the
-  contract's own "read on demand". Name the path and the trigger instead.
-- Never restate the whole memory bank in CLAUDE.md: point at it, and describe when to read it.
-- Prefer "do X, then verify with Y" over "best practices".`,
-  },
-  {
-    id: 'cursor',
-    label: 'Cursor',
-    detect: ['.cursor', '.cursorrules'],
-    ruleFiles: [
-      {
-        path: '.cursor/rules/engram-memory.mdc',
-        kind: 'cursor',
-        note: 'Rule file with alwaysApply so the memory contract is always in context.',
-      },
-    ],
-    skillSinks: [
-      {
-        kind: 'agent-skills',
-        dir: '.cursor/skills',
-        invoke: 'plain',
-        note: 'Project-level skills; `.agents/skills/` is honoured as well.',
-      },
-    ],
-    styleGuide: `- \`.mdc\` files need frontmatter: \`description\`, \`globs\`, \`alwaysApply\`.
-- One topic per rule file; keep each under ~500 lines and use \`@path\` references for depth.
-- Use \`globs\` for file-type-specific rules; for an always-on rule Cursor ignores \`globs\` and \`description\`, so emit \`alwaysApply: true\` alone.
-- Do not repeat content between rules — Cursor merges all matching rules and duplicates waste context.`,
-  },
-  {
-    id: 'windsurf',
-    label: 'Windsurf',
-    detect: ['.windsurf', '.windsurfrules'],
-    ruleFiles: [
-      {
-        path: '.windsurf/rules/engram-memory.md',
-        kind: 'windsurf',
-        note: 'Rule file with trigger: always_on.',
-      },
-    ],
-    skillSinks: [],
-    notes: [
-      '`.devin/rules/` is the Devin CLI/Devin Local preference; Windsurf Cascade still documents `.windsurf/rules/*.md` as its workspace rule path. Windsurf workflows are `.windsurf/workflows/`.',
-      'Workspace rules are capped at ~12,000 characters per file — keep the appended contract short.',
-    ],
-    styleGuide: `- Rule frontmatter: \`trigger: always_on | model_decision | glob | manual\`, \`description\`, and \`globs:\` when the mode is \`glob\`.
-- Reserve \`always_on\` for the memory contract; everything else should be \`model_decision\`.
-- Short, imperative, one rule per bullet. Windsurf cascades rules from the workspace root down.`,
-  },
-  {
-    id: 'copilot',
-    label: 'GitHub Copilot',
-    detect: ['.github/copilot-instructions.md', '.github/instructions'],
-    ruleFiles: [
-      {
-        path: '.github/copilot-instructions.md',
-        kind: 'copilot',
-        note: 'Repo-wide custom instructions; always applied to Copilot requests.',
-      },
-      {
-        path: '.github/instructions/engram-memory.instructions.md',
-        kind: 'copilot',
-        note: 'Path-scoped instruction file with applyTo so the contract survives future edits.',
-      },
-    ],
-    skillSinks: [
-      {
-        kind: 'prompt-md-args',
-        dir: '.github/prompts',
-        suffix: '.prompt.md',
-        frontmatter: 'copilot',
-        note: 'Reusable prompt files; available in VS Code, Visual Studio and JetBrains IDEs.',
-      },
-    ],
-    styleGuide: `- Copilot instructions are short bullet lists; avoid narrative.
-- Use \`.instructions.md\` files with \`applyTo\` globs for anything path-specific.
-- Phrase as constraints ("never commit .env", "always run npm test before proposing a patch").
-- Keep the two instruction files from duplicating each other: Copilot merges every matching file, so the same contract twice costs twice the tokens.`,
-  },
-  {
-    id: 'gemini',
-    label: 'Gemini CLI',
-    detect: ['GEMINI.md', '.gemini'],
-    ruleFiles: [
-      { path: 'GEMINI.md', kind: 'gemini', note: 'Primary context file loaded into every session.' },
-    ],
-    skillSinks: [
-      { kind: 'prompt-toml', dir: '.gemini/commands', note: 'Custom slash commands: /handoff.toml, …' },
-    ],
-    styleGuide: `- GEMINI.md is always injected: keep it short and command-focused.
-- Custom commands are TOML (\`description\` + \`prompt\`) in \`.gemini/commands/\`.
-- Use explicit headings and bullets; state triggers as "when X happens, read Y".`,
-  },
-  {
     id: 'pi',
     label: 'Pi (earendil-works)',
-    detect: ['.pi', 'AGENTS.md', 'CLAUDE.md'],
+    detect: ['.pi', '.agents', 'AGENTS.md'],
     ruleFiles: [
       {
         path: 'AGENTS.md',
-        kind: 'agents',
-        note: 'Pi loads AGENTS.md (or CLAUDE.md) as context files, cascading up the tree.',
+        note: 'The context file. Pi loads AGENTS.md (or CLAUDE.md) from the agent directory, the cwd and its parents.',
       },
     ],
     skillSinks: [
-      // No `.pi/skills` sink on purpose. Pi scans `.pi/skills` **and** `.agents/skills`
-      // (pi docs, "Add it to Pi"), so shipping the same skill name into both made every Pi
-      // session print "name collision" for all four skills and silently keep whichever dir was
-      // scanned first. `.agents/skills` is the Agent Skills standard dir Pi already reads.
+      // Two carriers, and no `.pi/skills`:
+      //
+      // Pi scans `.pi/skills` **and** `.agents/skills`, keeping the first copy of a duplicated name
+      // while warning. Shipping the same skill into both made every Pi session print a collision
+      // warning for all four skills, with the effective copy decided by scan order. `.agents/skills`
+      // is the Agent Skills standard dir Pi reads natively, so that is the one engram writes.
+      {
+        kind: 'agent-skills',
+        dir: '.agents/skills',
+        note: 'Agent Skills standard dir, read natively by Pi; invoked as /skill:<name>.',
+      },
       { kind: 'prompt-md-args', dir: '.pi/prompts', note: 'Prompt templates become /<name> slash commands.' },
     ],
     notes: [
-      'Skills load from the shared `.agents/skills/` (Agent Skills spec) — Pi reads it natively, so engram never duplicates them into `.pi/skills/`, where the second copy collides.',
-      'Project resources require trust; run `/reload` after adding skills or prompts in a live session.',
+      'Skills load from `.agents/skills/` — Pi reads it natively, so engram never duplicates them into `.pi/skills/`, where the second copy collides and warns.',
+      'Project resources require trust; run `/reload` after adding skills, prompts or the goal extension in a live session.',
       'Skills are advertised by name+description and loaded on demand — keep descriptions routing-precise.',
+      'The goal engine is an opt-in carrier: `engram config --goal on`, then `engram sync` writes `.pi/extensions/engram-goal.ts`.',
     ],
-    styleGuide: `- AGENTS.md is the context file, loaded from the agent directory, the cwd and its parents (not
-  discovered on demand downwards, unlike Codex); subdirectory files apply only when Pi runs there.
+    styleGuide: `- AGENTS.md is the context file, loaded from the agent directory, the cwd and its parents; subdirectory files apply only when Pi runs there.
+- Keep it under ~200 lines: long documents are skimmed, short ones are followed. Scope down with AGENTS.md files in subdirectories, not by growing the root file.
 - Skills: frontmatter \`name\` + \`description\` (max 1024 chars) decides when the model loads them — say what it does *and* when it applies.
 - Prefer bundled references over long instructions; Pi loads SKILL.md only when routed to.
-- Skills live in the shared \`.agents/skills/\` dir; Pi reads that alongside \`.pi/skills/\`, so never add a second copy of the same skill name under \`.pi/skills/\`.
-- Project trust gates project resources (\`.agents/skills/\`, \`.pi/prompts/\`); mention this to humans, not to the model.`,
-  },
-  {
-    id: 'dsh',
-    label: 'DeepSeek Harness (dsh)',
-    detect: ['.dsh', 'AGENTS.md', 'CLAUDE.md'],
-    ruleFiles: [
-      {
-        path: 'AGENTS.md',
-        kind: 'agents',
-        note: 'dsh-agent-instructions loads the project AGENTS.md/CLAUDE.md chain from the repo root down to the session cwd.',
-      },
-    ],
-    skillSinks: [
-      // No `.dsh/skills` sink on purpose. `dsh-skill-filesystem` scans `.dsh/skills` (rank 100)
-      // *and* `.agents/skills` (rank 200) and keeps the first name it finds, so a second engram
-      // copy would shadow the portable one and warn on every session — the Pi `.pi/skills`
-      // collision, one provider later. `.agents/skills` is the dir engram already ships.
-      {
-        kind: 'agent-skills',
-        dir: '.agents/skills',
-        invoke: 'plain',
-        note: 'dsh scans `.agents/skills` (rank 200) for `<name>/SKILL.md`; the model loads a skill with the `skill` tool and a human invokes it as `/name`.',
-      },
-    ],
-    notes: [
-      'dsh loads `AGENTS.md`/`CLAUDE.md` from the repo root down to the session cwd; a `CLAUDE.md` byte-identical to `AGENTS.md` renders once, a distinct one loads in full alongside it — keep one, not both, if you want a single contract in context.',
-      'Skills resolve first-wins by root: project `.dsh/skills` (rank 100) outranks `.agents/skills` (rank 200). engram writes only `.agents/skills`, so a same-named skill you author under `.dsh/skills` shadows its carrier with a warning.',
-      'The workspace-instruction chain is refreshed on a successful filesystem call into a new directory and on session resume — no `@path` imports are interpreted, so pointers must name files and triggers.',
-      '`dsh-base` already enables instruction loading and skill discovery; a custom profile can drop either plugin, in which case only the `.ai/` contract fallback remains.',
-    ],
-    styleGuide: `- dsh loads \`AGENTS.md\` (then \`CLAUDE.md\`) from the repo root down to the session cwd under a byte budget (65,536 by default in \`dsh-base\`); keep the root file short and put depth in \`.ai/\`.
-- There is no \`@path\` import syntax: name the \`.ai/\` file and the trigger ("before changing architecture, read \`.ai/ARCHITECTURE.md\`") instead of importing it.
-- Skill frontmatter is strict: \`name\` must be kebab-case, \`description\` is required and is the whole routing signal the model sees; say what the skill does *and* when it applies.
-- Skills are discovered one level deep only — \`<name>/SKILL.md\` or \`<name>.md\` directly under a scanned root; never nest a skill deeper.
-- State the sandbox and approval model explicitly: which commands dsh may run unattended, which need a human, and what must never be committed.`,
+- Skills live in \`.agents/skills/\`; Pi reads that alongside \`.pi/skills/\`, so never add a second copy of the same skill name under \`.pi/skills/\`.
+- Project trust gates project resources (\`.agents/skills/\`, \`.pi/prompts/\`, \`.pi/extensions/\`); mention this to humans, not to the model.`,
   },
 ];
 
-export const DEFAULT_TOOL_IDS = ['agents', 'claude', 'cursor', 'pi', 'dsh'] as const;
+/**
+ * Rule files engram owns, in a stable order.
+ *
+ * Was `ruleFilesFor(toolIds)`, de-duplicating AGENTS.md across whichever tools shared it. With one
+ * tool the de-duplication had nothing to do, and keeping it would have implied otherwise.
+ */
+export function ruleFiles(): RuleFileDef[] {
+  return TOOLS.flatMap((t) => t.ruleFiles);
+}
 
+/** The single supported tool. Kept as a lookup so a call site reads as intent, not as an index. */
 export function getTool(id: string): ToolDef | undefined {
   return TOOLS.find((t) => t.id === id);
 }
 
-export function allToolIds(): string[] {
-  return TOOLS.map((t) => t.id);
-}
-
-/** Rule-file paths claimed by the selected tools, de-duplicated, stable order. */
-export function ruleFilesFor(toolIds: string[]): Array<{ toolId: string; def: RuleFileDef }> {
-  const seen = new Map<string, { toolId: string; def: RuleFileDef }>();
-  for (const id of toolIds) {
-    const tool = getTool(id);
-    if (!tool) continue;
-    for (const def of tool.ruleFiles) {
-      if (!seen.has(def.path)) seen.set(def.path, { toolId: id, def });
-    }
-  }
-  return [...seen.values()];
-}
-
-/** Tools that write the same rule file as `toolId` (AGENTS.md is shared). */
-export function toolsSharingRuleFile(toolIds: string[], rulePath: string): string[] {
-  return toolIds.filter((id) => getTool(id)?.ruleFiles.some((f) => f.path === rulePath));
-}
-
-/** Every skill/command carrier directory any tool can claim, de-duplicated, stable order. */
+/** Every carrier directory engram writes, de-duplicated, stable order. */
 export function allSinkDirs(): string[] {
   return [...new Set(TOOLS.flatMap((t) => t.skillSinks.map((s) => s.dir)))];
 }
 
 /**
- * Carrier directories no tool claims any more, kept so `sync` can clean up after itself.
+ * Carrier directories engram no longer writes, kept so `sync` can clean up after itself.
  *
- * `.pi/skills` is here because Pi reads `.agents/skills` natively: materialising both made every
- * Pi startup warn about four colliding skill names. Pruning is deliberately limited to *retired*
- * dirs rather than "any dir the current flags did not select", so `sync --tools agents` narrows
- * what it writes instead of deleting a user's working Claude/Codex carriers.
+ * One rule applies to every entry: **only a file engram itself generated is ever deleted.** The
+ * marker check lives in `commands/prune-carriers.ts`; a hand-written skill in one of these dirs
+ * survives untouched.
+ *
+ * - `.pi/skills` — Pi reads `.agents/skills` natively; materialising both printed a collision warning
+ *   for every skill at every startup.
+ * - the rest belong to clients dropped on 2026-10-18 (Claude Code, Cursor, GitHub Copilot, Gemini
+ *   CLI). Without them those directories keep advertising skills for tools engram cannot install
+ *   for, and nothing would ever report them.
  */
-export const RETIRED_SINK_DIRS: readonly string[] = ['.pi/skills'];
+export const RETIRED_SINK_DIRS: readonly string[] = [
+  '.pi/skills',
+  '.claude/skills',
+  '.cursor/skills',
+  '.github/prompts',
+  '.gemini/commands',
+];
+
+/**
+ * Rule files engram used to write for other clients.
+ *
+ * Reported by `sync`, **never deleted**. A rule file may contain a human-authored body — `init`
+ * preserves it deliberately — so there is no marker that would make removal safe. Warning is not
+ * optional either: the file keeps injecting a contract block that this `sync` no longer refreshes,
+ * and it is the one artefact of the old multi-client setup a person has to clean up by hand.
+ */
+export const RETIRED_RULE_FILES: readonly string[] = [
+  'CLAUDE.md',
+  '.cursor/rules/engram-memory.mdc',
+  '.windsurf/rules/engram-memory.md',
+  '.github/copilot-instructions.md',
+  '.github/instructions/engram-memory.instructions.md',
+  'GEMINI.md',
+];

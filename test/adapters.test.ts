@@ -1,69 +1,89 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TOOLS, getTool, ruleFilesFor, DEFAULT_TOOL_IDS } from '../src/adapters/index.js';
+import {
+  TOOLS,
+  getTool,
+  ruleFiles,
+  allSinkDirs,
+  RETIRED_SINK_DIRS,
+  RETIRED_RULE_FILES,
+} from '../src/adapters/index.js';
 import { commandNameFor, materialize } from '../src/adapters/skills.js';
 import { SKILL_SPECS } from '../src/templates/skills.js';
 import { AI_CONTRACT } from '../src/templates/contract.js';
+import { runInit, runSync } from '../src/commands/init.js';
+import { readConfig, writeConfig } from '../src/core/config.js';
+import { sandbox, seedBank } from './helpers.js';
 
-test('registry ids are unique and every tool carries a style guide', () => {
-  const ids = TOOLS.map((t) => t.id);
-  assert.equal(new Set(ids).size, ids.length, 'duplicate tool id');
-  for (const tool of TOOLS) {
-    assert.ok(tool.styleGuide.length > 80, `${tool.id} needs real style guidance`);
-    assert.ok(tool.ruleFiles.length > 0, `${tool.id} needs at least one rule file`);
-    assert.ok(tool.detect.length > 0, `${tool.id} needs detection paths`);
+/**
+ * The registry is one entry, and that is enforced rather than trusted.
+ *
+ * engram supported nine tools, then three, then one. Each subtraction ended in a file like this
+ * because the failure mode of "we removed the adapter but left the entry" is a tool that keeps
+ * advertising support it does not have. Adding a client must therefore fail here, so that it costs a
+ * decision file rather than an edit.
+ */
+
+test('exactly one client is supported, and it is Pi', () => {
+  assert.deepEqual(
+    TOOLS.map((t) => t.id),
+    ['pi'],
+    'engram serves Pi only; re-adding a client is a decision, not an edit',
+  );
+  assert.equal(getTool('pi')?.label, 'Pi (earendil-works)');
+});
+
+test('no removed client can resolve', () => {
+  for (const gone of ['agents', 'claude', 'codex', 'cursor', 'windsurf', 'copilot', 'gemini', 'dsh']) {
+    assert.equal(getTool(gone), undefined, `${gone} was removed and must not resolve`);
   }
 });
 
-test('ruleFilesFor de-duplicates AGENTS.md across tools and keeps order', () => {
-  const files = ruleFilesFor(['codex', 'pi', 'claude']);
-  const paths = files.map((f) => f.def.path);
-  assert.deepEqual(paths, ['AGENTS.md', 'CLAUDE.md']);
-  assert.equal(files[0]?.toolId, 'codex');
+test('the tool carries a real style guide, rule file and detection paths', () => {
+  const pi = TOOLS[0];
+  assert.ok(pi);
+  assert.ok(pi.styleGuide.length > 80, 'Pi needs real style guidance, not a placeholder');
+  assert.deepEqual(ruleFiles().map((f) => f.path), ['AGENTS.md']);
+  assert.ok(pi.ruleFiles[0]?.note.includes('Pi'), 'the note says who reads it');
+  assert.deepEqual(pi.detect, ['.pi', '.agents', 'AGENTS.md']);
 });
 
-test('unknown tool ids resolve to undefined rather than throwing', () => {
-  assert.equal(getTool('nope'), undefined);
+test('the two carriers are the Agent Skills dir and the Pi prompts dir', () => {
+  const pi = TOOLS[0];
+  assert.ok(pi);
+  assert.deepEqual(pi.skillSinks.map((s) => [s.kind, s.dir]), [
+    ['agent-skills', '.agents/skills'],
+    ['prompt-md-args', '.pi/prompts'],
+  ]);
+  assert.deepEqual(allSinkDirs(), ['.agents/skills', '.pi/prompts']);
+  // `.pi/skills` collides with `.agents/skills` at every Pi startup.
+  assert.ok(!pi.skillSinks.some((s) => s.dir === '.pi/skills'));
 });
 
-test('skill carriers rewrite the ARGUMENTS token per tool', () => {
+test('skill carriers rewrite the ARGUMENTS token per carrier shape', () => {
   const agentSkills = materialize({ kind: 'agent-skills', dir: '.agents/skills' }, SKILL_SPECS);
-  const slash = materialize({ kind: 'prompt-md-args', dir: '.claude/commands' }, SKILL_SPECS);
-  const gemini = materialize({ kind: 'prompt-toml', dir: '.gemini/commands' }, SKILL_SPECS);
+  const slash = materialize({ kind: 'prompt-md-args', dir: '.pi/prompts' }, SKILL_SPECS);
 
   const skill = agentSkills.find((f) => f.path === '.agents/skills/handoff/SKILL.md');
   assert.ok(skill);
   assert.ok(skill.content.startsWith('---\nname: handoff\n'));
   assert.ok(!skill.content.includes('$ARGUMENTS'));
 
-  const command = slash.find((f) => f.path === '.claude/commands/handoff.md');
+  const command = slash.find((f) => f.path === '.pi/prompts/handoff.md');
   assert.ok(command);
   assert.match(command.content, /^---\ndescription: /m);
   assert.match(command.content, /^argument-hint: '.*'$/m, 'argument-hint must be valid YAML');
   assert.ok(command.content.includes('$ARGUMENTS'));
-  assert.ok(
-    !/^description: .*: /m.test(command.content) && command.content.split('\n')[2]?.includes('e.g.'),
-    'quotes inside the hint must not break the frontmatter scalar',
-  );
-
-  const toml = gemini.find((f) => f.path === '.gemini/commands/handoff.toml');
-  assert.ok(toml);
-  assert.match(toml.content, /^description = "/m);
-  assert.match(toml.content, /prompt = """/);
-  assert.ok(toml.content.includes('{{args}}'));
-  assert.ok(!toml.content.includes('"""prose'));
 });
 
 test('every materialised file declares its canonical source and the generated marker', () => {
-  for (const sink of [
-    { kind: 'agent-skills', dir: '.agents/skills' },
-    { kind: 'prompt-md-args', dir: '.github/prompts', suffix: '.prompt.md', frontmatter: 'copilot' },
-  ] as const) {
+  for (const sink of allSinkDirs().map((dir) =>
+    dir === '.agents/skills'
+      ? ({ kind: 'agent-skills', dir } as const)
+      : ({ kind: 'prompt-md-args', dir } as const),
+  )) {
     for (const file of materialize(sink, SKILL_SPECS)) {
-      assert.ok(
-        file.content.includes(`<!-- engram:generated -->`),
-        `${file.path} must be marked generated`,
-      );
+      assert.ok(file.content.includes(`<!-- engram:generated -->`), `${file.path} must be marked generated`);
       assert.ok(file.content.includes(`.ai/skills/`), `${file.path} must name its source`);
     }
   }
@@ -83,112 +103,96 @@ test('slash-command frontmatter parses as YAML for every skill', () => {
   }
 });
 
-test('copilot prompt files use the official .prompt.md name and agent: frontmatter', () => {
-  // Corrections from a docs fact-check: the filename must be <name>.prompt.md (a bare .md is
-  // not registered) and the frontmatter key is `agent:`, not `mode:`.
-  const [file] = materialize(
-    { kind: 'prompt-md-args', dir: '.github/prompts', suffix: '.prompt.md', frontmatter: 'copilot' },
-    SKILL_SPECS,
-  );
-  assert.ok(file);
-  assert.equal(file.path, '.github/prompts/handoff.prompt.md');
-  assert.match(file.content, /^---\nagent: agent\n/m);
-  assert.ok(!file.content.includes('mode: agent'), 'there is no `mode:` key in prompt-file frontmatter');
-  assert.ok(!file.content.includes('argument-hint'));
-});
-
-test('codex does support project skills, so it gets an .agents/skills sink', () => {
-  const codex = getTool('codex');
-  assert.ok(codex);
-  assert.ok(codex.skillSinks.length > 0, 'Codex scans .agents/skills from cwd to the repo root');
-  assert.equal(codex.skillSinks[0]?.dir, '.agents/skills');
-});
-
-test('claude has no .claude/commands sink, because a same-named skill shadows it', () => {
-  const claude = getTool('claude');
-  assert.ok(claude);
-  const dirs = claude.skillSinks.map((sk) => sk.dir);
-  assert.ok(dirs.includes('.claude/skills'));
-  assert.ok(!dirs.includes('.claude/commands'), 'the command file would be permanently dead');
-});
-
-test('skill invocation syntax is per-tool, not hardcoded /skill:', () => {
+test('Pi invocation syntax is /skill: for a skill and / for a prompt', () => {
   const spec = SKILL_SPECS[0];
   assert.ok(spec);
-  const claude = getTool('claude')?.skillSinks[0];
-  const pi = getTool('pi')?.skillSinks.find((s) => s.kind === 'agent-skills');
-  assert.ok(claude);
-  assert.equal(commandNameFor(claude, spec), '/handoff', 'Claude invokes skills as /name');
-  assert.equal(
-    commandNameFor({ kind: 'agent-skills', dir: '.agents/skills' }, spec),
-    '/skill:handoff',
-    '/skill: is Pi-specific, and .agents/skills is the dir Pi loads',
-  );
-  assert.equal(pi, undefined, 'Pi reads .agents/skills natively; a .pi/skills copy would collide');
+  assert.equal(commandNameFor({ kind: 'agent-skills', dir: '.agents/skills' }, spec), '/skill:handoff');
+  assert.equal(commandNameFor({ kind: 'prompt-md-args', dir: '.pi/prompts' }, spec), '/handoff');
 });
 
-test('REGRESSION no two sinks of one tool write the same skill into dirs Pi scans', () => {
-  // Pi scans both `.pi/skills` and `.agents/skills` (pi docs, "Add it to Pi") and keeps the
-  // first skill of a duplicated name while warning. Shipping `audit` into both dirs printed four
-  // collision warnings at every Pi startup and made the effective copy depend on scan order.
-  const piDirs = (getTool('pi')?.skillSinks ?? []).map((s) => s.dir);
-  assert.ok(!piDirs.includes('.pi/skills'), 'the colliding sink must not come back');
-  for (const tool of TOOLS) {
-    const dirs = tool.skillSinks.map((s) => s.dir);
-    assert.equal(new Set(dirs).size, dirs.length, `${tool.id} writes the same sink twice`);
+test('RETIRED_SINK_DIRS holds every dir engram stopped writing, and nothing it still owns', () => {
+  for (const dir of ['.pi/skills', '.claude/skills', '.cursor/skills', '.github/prompts', '.gemini/commands']) {
+    assert.ok(RETIRED_SINK_DIRS.includes(dir), `${dir} must be prunable`);
   }
-  assert.ok(piDirs.includes('.pi/prompts'), 'prompt templates stay Pi-native');
+  for (const live of allSinkDirs()) {
+    assert.ok(!RETIRED_SINK_DIRS.includes(live), `${live} is still written by Pi and must not be pruned`);
+  }
 });
 
-test('REGRESSION dsh reads .dsh/skills too, so it gets only the shared .agents/skills carrier', () => {
-  // `dsh-skill-filesystem` scans project `.dsh/skills` (rank 100) *and* `.agents/skills`
-  // (rank 200) and keeps the first candidate of a duplicated name with a warning. Adding a
-  // `.dsh/skills` sink would therefore shadow the portable carrier — the same class of bug that
-  // retired `.pi/skills`. The project instruction file is AGENTS.md via dsh-agent-instructions.
-  const dsh = getTool('dsh');
-  assert.ok(dsh, 'dsh must be a supported tool');
-  assert.deepEqual(
-    dsh.ruleFiles.map((f) => f.path),
-    ['AGENTS.md'],
-    'dsh-agent-instructions loads the AGENTS.md chain',
-  );
-  const dirs = dsh.skillSinks.map((s) => s.dir);
-  assert.deepEqual(dirs, ['.agents/skills']);
-  assert.ok(!dirs.includes('.dsh/skills'), 'the shadowing sink must not exist');
-  assert.equal((dsh.skillSinks[0] as { invoke?: string }).invoke, 'plain', 'dsh is invoked as /name');
-  assert.ok(
-    !/RETIRED_SINK_DIRS[\s\S]*?'\.dsh\/skills'/.test(dsh.styleGuide),
-    'no stale pointer at a retired sink dir',
-  );
-});
-
-test('dsh is part of the default tool set, so `init` wires it without --tools', () => {
-  assert.ok(DEFAULT_TOOL_IDS.includes('dsh'));
-  const files = ruleFilesFor([...DEFAULT_TOOL_IDS]);
-  assert.deepEqual(
-    files.map((f) => f.def.path),
-    ['AGENTS.md', 'CLAUDE.md', '.cursor/rules/engram-memory.mdc'],
-  );
+test('RETIRED_RULE_FILES names every stale contract, and no path Pi owns', () => {
+  assert.deepEqual([...RETIRED_RULE_FILES].sort(), [
+    '.cursor/rules/engram-memory.mdc',
+    '.github/copilot-instructions.md',
+    '.github/instructions/engram-memory.instructions.md',
+    '.windsurf/rules/engram-memory.md',
+    'CLAUDE.md',
+    'GEMINI.md',
+  ]);
+  for (const live of ruleFiles()) {
+    assert.ok(!RETIRED_RULE_FILES.includes(live.path), `${live.path} is Pi's own rule file`);
+  }
 });
 
 test('REGRESSION the ARGUMENTS placeholder does not rewrite its own documentation', () => {
   // The old global replace produced "$ARGUMENTS: `$ARGUMENTS` is the optional topic slug"
   // across 16 generated carriers: a garbled instruction about where to get the slug.
-  for (const file of materialize({ kind: 'prompt-md-args', dir: '.claude/commands' }, SKILL_SPECS)) {
+  for (const file of materialize({ kind: 'prompt-md-args', dir: '.pi/prompts' }, SKILL_SPECS)) {
     assert.ok(file.content.includes('$ARGUMENTS'), `${file.path} must substitute the placeholder`);
     assert.ok(
       !/\$ARGUMENTS:\s*`\$ARGUMENTS`/.test(file.content),
       `${file.path} rewrote the sentence that documents the placeholder`,
     );
   }
-  for (const file of materialize({ kind: 'prompt-toml', dir: '.gemini/commands' }, SKILL_SPECS)) {
-    assert.ok(!/\{\{args\}\}:\s*`\{\{args\}\}`/.test(file.content), `${file.path} has the same defect`);
-  }
 });
 
-test('tools without native skill support rely on the contract fallback', () => {
-  const windsurf = getTool('windsurf');
-  assert.ok(windsurf);
-  assert.deepEqual(windsurf.skillSinks, [], 'Windsurf has no project-scoped skill mechanism');
+test('the contract still names the passive fallback for a client with no skill support', () => {
   assert.ok(AI_CONTRACT.includes('.ai/skills/*.md'), 'contract must name the passive fallback');
+});
+
+// ── the Pi-only migration ─────────────────────────────────────────────────────
+
+test('init writes a v2 config with no tool list', async (t) => {
+  // A `tools: ["pi"]` array would be a list with one legal value — an extensibility story the
+  // product no longer tells.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await runInit({ root: sb.root });
+  const raw = JSON.parse(await sb.read('.engram/config.json')) as Record<string, unknown>;
+  assert.equal(raw.version, 2);
+  assert.equal(raw.tools, undefined, 'the tool list is gone');
+});
+
+test('a v1 config is still readable, and sync rewrites it without losing the goal opt-in', async (t) => {
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  await sb.write(
+    '.engram/config.json',
+    JSON.stringify({ version: 1, tools: ['claude', 'codex', 'pi'], goal: { enabled: true } }),
+  );
+  // Reading a legacy file must not drop the one field that still means something.
+  const before = await readConfig(sb.root);
+  assert.equal(before?.goal?.enabled, true, 'v1 is accepted and its goal flag is preserved');
+
+  await runSync(sb.root);
+  const raw = JSON.parse(await sb.read('.engram/config.json')) as Record<string, unknown>;
+  assert.equal(raw.version, 2, 'sync upgrades the file');
+  assert.equal(raw.tools, undefined);
+  assert.deepEqual(raw.goal, { enabled: true });
+});
+
+test('a config with an unsupported version is ignored rather than trusted', async (t) => {
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await sb.write('.engram/config.json', JSON.stringify({ version: 99, goal: { enabled: true } }));
+  assert.equal(await readConfig(sb.root), null, 'a future format must not enable lifecycle code');
+});
+
+test('writeConfig round-trips the goal opt-in', async (t) => {
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await writeConfig(sb.root, true);
+  assert.equal((await readConfig(sb.root))?.goal?.enabled, true);
+  await writeConfig(sb.root, false);
+  assert.equal((await readConfig(sb.root))?.goal?.enabled, false);
 });

@@ -1,6 +1,5 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { SKILL_SPECS } from '../templates/skills.js';
 import { RETIRED_SINK_DIRS, type ToolDef, type SkillSink } from '../adapters/index.js';
 import { pathExists, readFileSafe, listIfPresent } from '../core/project.js';
 
@@ -97,13 +96,28 @@ function nameOfCarrier(sink: SkillSink, rel: string): string | null {
   if (sink.kind === 'agent-skills') {
     return base === 'SKILL.md' ? path.posix.basename(path.posix.dirname(rel)) : base.replace(/\.md$/, '');
   }
-  if (sink.kind === 'prompt-md-args') {
-    const prefix = sink.prefix ?? '';
-    const suffix = sink.suffix ?? '.md';
-    if (!base.startsWith(prefix) || !base.endsWith(suffix)) return null;
-    return base.slice(prefix.length, base.length - suffix.length);
+  // `prompt-md-args` is the only other carrier shape: `<name>.md`.
+  return base.endsWith('.md') ? base.slice(0, -'.md'.length) : null;
+}
+
+/**
+ * Every file inside a retired sink dir, including one level of `<name>/SKILL.md` nesting.
+ *
+ * `listIfPresent` returns files only, so the nested shape needs its own pass — the same reason
+ * `carriersIn` exists for live sinks.
+ */
+async function carriersInRoot(root: string, dir: string, names: readonly string[]): Promise<string[]> {
+  const out = names.map((n) => path.posix.join(dir, n));
+  try {
+    for (const entry of await fs.readdir(path.join(root, dir), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const nested = path.posix.join(dir, entry.name, 'SKILL.md');
+      if (await pathExists(path.join(root, nested))) out.push(nested);
+    }
+  } catch {
+    /* unreadable or absent: nothing to prune */
   }
-  return base.replace(/\.toml$/, '');
+  return out;
 }
 
 /**
@@ -133,25 +147,28 @@ export async function pruneStaleCarriers(
   // Without a readable canonical directory there is no authority to declare a carrier an orphan.
   const pruneOrphans = skillsDirAuthoritative;
 
-  // 1. Retired sink dirs: only engram's own built-in skill names were ever written there.
+  // 1. Retired sink dirs. `owned` is the guard: a dir a current tool claims is live, whatever this
+  //    list says.
+  //
+  //    This used to enumerate `${SKILL_SPECS.name}` × three hard-coded filename shapes, because "only
+  //    engram's own built-in names were ever written there". That was already fragile and it silently
+  //    broke the day a retired client's carrier had a fourth shape: Copilot's prompt files are
+  //    `<name>.prompt.md`, which matched none of the three, so `.github/prompts/*.prompt.md` survived
+  //    every `sync` in every repository that had ever used that adapter. Enumerating the directory
+  //    instead means a retired dir is cleaned whatever shape its files have — the safety property was
+  //    never the name list, it is the generated-marker check below plus `resolvesInside`.
   for (const dir of RETIRED_SINK_DIRS) {
     if (owned.has(dir)) continue;
+    const listing = await listIfPresent(path.join(root, dir));
     let touched = false;
-    for (const spec of SKILL_SPECS) {
-      const candidates = [
-        path.posix.join(dir, spec.name, 'SKILL.md'),
-        path.posix.join(dir, `${spec.name}.md`),
-        path.posix.join(dir, `${spec.name}.toml`),
-      ];
-      for (const candidate of candidates) {
-        if (!(await pathExists(path.join(root, candidate)))) continue;
-        if (!(await resolvesInside(root, candidate))) continue;
-        if (!(await isGeneratedCarrier(root, candidate))) continue;
-        if (!dryRun) await fs.rm(path.join(root, candidate));
-        removed.push(candidate);
-        touched = true;
-        if (!dryRun && candidate.endsWith('SKILL.md')) await removeIfEmpty(path.join(root, dir, spec.name));
-      }
+    for (const rel of await carriersInRoot(root, dir, listing.names)) {
+      if (!(await resolvesInside(root, rel))) continue;
+      if (!(await isGeneratedCarrier(root, rel))) continue;
+      if (!dryRun) await fs.rm(path.join(root, rel));
+      removed.push(rel);
+      touched = true;
+      // A `<name>/SKILL.md` carrier leaves its now-empty directory behind.
+      if (rel.endsWith('/SKILL.md')) await removeIfEmpty(path.join(root, path.posix.dirname(rel)));
     }
     if (touched && !dryRun) await removeIfEmpty(path.join(root, dir));
   }

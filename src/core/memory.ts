@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { isDir, isTemplateName, listIfPresent, readIfPresent, type ListResult, type ReadResult } from './project.js';
 import { readSections, type CustomSection } from './sections.js';
+import { activeGoal, damagedGoals, readGoalBrief } from './goal-store.js';
+import type { GoalBrief, GoalRecord } from './goal.js';
 
 export type DecisionStatus = 'PROPOSAL' | 'ACCEPTED' | 'REJECTED' | 'UNKNOWN';
 
@@ -52,6 +54,16 @@ export interface MemoryBank {
    * did not invent still reaches the fingerprint and the rule-file contract.
    */
   sections: CustomSection[];
+  /**
+   * The project's live goal, when one exists.
+   *
+   * Loaded with the rest of the bank rather than on demand, because an active goal outranks every
+   * other line in the fingerprint: a fresh session that does not know it is the baton holder will
+   * start an unrelated task in the middle of someone's twenty-round run.
+   */
+  goal: { id: string; record: GoalRecord; brief: GoalBrief } | null;
+  /** Goal directories present but unreadable — a damaged goal is not an absent one. */
+  goalErrors: string[];
   /**
    * Paths that exist but could not be read (EACCES, EMFILE, …).
    * A non-empty list means the bank is *partially* unreadable, not empty — `dump` says so.
@@ -324,6 +336,8 @@ export async function loadMemory(root: string): Promise<MemoryBank> {
       runbooks: [],
       skills: [],
       sections: [],
+      goal: null,
+      goalErrors: [],
       readErrors: errors,
       warnings: [],
     };
@@ -337,6 +351,9 @@ export async function loadMemory(root: string): Promise<MemoryBank> {
   const pitfalls = await readEntries(path.join(dir, 'pitfalls', 'cases'));
   const skills = await listIfPresent(path.join(dir, 'skills'));
   const declared = await readSections(root);
+  const live = await activeGoal(root);
+  const goal = live === null ? null : { ...live, brief: await readGoalBrief(root, live.id) };
+  const goalErrors = await damagedGoals(root);
 
   return {
     root,
@@ -353,6 +370,8 @@ export async function loadMemory(root: string): Promise<MemoryBank> {
     runbooks: runbooks.entries.sort(byDateDesc),
     skills: skills.names.filter((f) => f.endsWith('.md') && !isTemplateName(f)),
     sections: declared.sections,
+    goal,
+    goalErrors,
     readErrors: [...errors, ...decisions.errors, ...sessions.errors, ...runbooks.errors, ...pitfalls.errors, ...(skills.error ? [skills.error] : [])],
     warnings: declared.warnings,
   };

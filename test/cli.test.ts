@@ -9,19 +9,27 @@ const pkg = JSON.parse(
   await fs.readFile(new URL('../../package.json', import.meta.url), 'utf8'),
 ) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
 
-/** Run `main` with stdout captured. */
-async function run(args: string[]): Promise<{ code: number; out: string }> {
+/** Run `main` with stdout and stderr captured. */
+async function run(args: string[]): Promise<{ code: number; out: string; err: string }> {
   const chunks: string[] = [];
+  const errs: string[] = [];
   const original = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk: string | Uint8Array): boolean => {
-    chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
-    return true;
-  }) as typeof process.stdout.write;
+  const originalErr = process.stderr.write.bind(process.stderr);
+  const capture = (into: string[]) =>
+    ((chunk: string | Uint8Array): boolean => {
+      into.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    }) as typeof process.stdout.write;
+  process.stdout.write = capture(chunks);
+  // stderr is captured too: a removed flag must be reported, and a warning nobody can assert on is a
+  // warning nobody notices disappearing.
+  process.stderr.write = capture(errs);
   try {
     const code = await main(args);
-    return { code, out: chunks.join('') };
+    return { code, out: chunks.join(''), err: errs.join('') };
   } finally {
     process.stdout.write = original;
+    process.stderr.write = originalErr;
   }
 }
 
@@ -50,12 +58,24 @@ test('unknown command exits 1', async () => {
   assert.equal(res.code, 1);
 });
 
-test('tools lists every adapter', async () => {
+test('tools lists the one supported client and nothing else', async () => {
   const res = await run(['tools']);
   assert.equal(res.code, 0);
-  for (const id of ['agents', 'claude', 'cursor', 'pi', 'codex', 'copilot', 'gemini', 'windsurf', 'dsh']) {
-    assert.ok(res.out.includes(id), `tools omits ${id}`);
+  assert.match(res.out, /^pi\s+Pi \(earendil-works\)$/m);
+  // A removed client must not reappear in the inventory: this is the user-visible promise.
+  for (const gone of ['claude', 'codex', 'cursor', 'windsurf', 'copilot', 'gemini', 'dsh']) {
+    assert.ok(!res.out.includes(gone), `tools still advertises ${gone}`);
   }
+});
+
+test('the removed --tools/--all flags warn instead of being silently ignored', async (t) => {
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  const init = await run(['init', '--tools', 'claude', '--root', sb.root]);
+  assert.equal(init.code, 0);
+  assert.match(init.err, /--tools\/--all were removed/);
+  const sync = await run(['sync', '--all', '--root', sb.root]);
+  assert.match(sync.err, /--tools\/--all were removed/);
 });
 
 test('init → dump → sync runs end to end through the CLI surface', async (t) => {
@@ -63,7 +83,7 @@ test('init → dump → sync runs end to end through the CLI surface', async (t)
   t.after(() => sb.cleanup());
   await sb.write('package.json', JSON.stringify({ name: 'demo-app', scripts: { test: 'node --test' } }));
 
-  const init = await run(['init', '--tools', 'agents,claude', '--notes', 'prefer pnpm', '--root', sb.root]);
+  const init = await run(['init', '--notes', 'prefer pnpm', '--notes', 'prefer pnpm', '--root', sb.root]);
   assert.equal(init.code, 0);
   assert.match(init.out, /BOOTSTRAP\.md/);
   assert.match(init.out, /engram sync/);
@@ -85,7 +105,7 @@ test('init → dump → sync runs end to end through the CLI surface', async (t)
 test('dump honours --max-bytes and --json', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await run(['init', '--tools', 'agents', '--root', sb.root]);
+  await run(['init', '--root', sb.root]);
 
   const tight = await run(['dump', '--root', sb.root, '--max-bytes', '420']);
   assert.ok(Buffer.byteLength(tight.out, 'utf8') <= 460);
@@ -99,7 +119,7 @@ test('dump honours --max-bytes and --json', async (t) => {
 test('dump --out writes the fingerprint to a file', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await run(['init', '--tools', 'agents', '--root', sb.root]);
+  await run(['init', '--root', sb.root]);
   await run(['dump', '--root', sb.root, '--out', path.join('.engram', 'LAST.md')]);
   assert.match(await sb.read('.engram/LAST.md'), /^# engram v1/);
 });
@@ -141,7 +161,7 @@ test('REGRESSION the installed (symlinked) bin still runs', async (t) => {
   // npm exposes `.bin/engram` as a symlink; without realpath the CLI exited 0 with no output.
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await run(['init', '--tools', 'agents', '--root', sb.root]);
+  await run(['init', '--root', sb.root]);
   const link = path.join(sb.root, 'engram-bin');
   await fs.symlink(path.resolve('build/src/cli.js'), link);
   const { execFile } = await import('node:child_process');
@@ -156,13 +176,14 @@ test('REGRESSION the installed (symlinked) bin still runs', async (t) => {
 test('REGRESSION init --force really regenerates a rule file', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
+  // `codex` is the tool that owns AGENTS.md in the reduced registry.
   await sb.write('AGENTS.md', '# Human rules\n\nNever touch deploy.\n');
-  const plain = await run(['init', '--tools', 'agents', '--root', sb.root]);
+  const plain = await run(['init', '--root', sb.root]);
   assert.equal(plain.code, 0);
   const preserved = await sb.read('AGENTS.md');
   assert.ok(preserved.includes('Never touch deploy.'), 'default init preserves human content');
 
-  const forced = await run(['init', '--tools', 'agents', '--force', '--root', sb.root]);
+  const forced = await run(['init', '--force', '--root', sb.root]);
   assert.equal(forced.code, 0);
   const regenerated = await sb.read('AGENTS.md');
   assert.ok(!regenerated.includes('Never touch deploy.'), '--force must replace the stubbed body');
@@ -172,7 +193,7 @@ test('REGRESSION init --force really regenerates a rule file', async (t) => {
 test('dump --out writes the requested format', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());
-  await run(['init', '--tools', 'agents', '--root', sb.root]);
+  await run(['init', '--root', sb.root]);
   await run(['dump', '--json', '--out', 'snap.json', '--root', sb.root]);
   const written = JSON.parse(await sb.read('snap.json')) as { project: string };
   assert.equal(typeof written.project, 'string');

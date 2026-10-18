@@ -9,12 +9,10 @@ import {
   withoutContract,
   type ContractExtensions,
 } from '../templates/contract.js';
-import type { RuleFileDef, RuleFileKind } from './index.js';
+import type { RuleFileDef } from './index.js';
 
 export interface RuleRenderContext {
   projectName: string;
-  /** Sibling tools sharing the same file, e.g. AGENTS.md → codex, pi. */
-  alsoReadBy: string[];
   /** Project-declared `.ai/` sections, rendered into the contract's two tables. */
   extensions?: ContractExtensions;
 }
@@ -32,82 +30,8 @@ A good replacement contains, in this order:
 4. Definition of done: what must pass before a change is considered complete.
 <!-- /engram:todo -->`;
 
-/**
- * Claude Code's @-import is deliberately NOT used for the bank.
- *
- * An `@.ai/README.md` line is not a pointer: Claude loads the target in full, every session —
- * roughly 6.5 KB of always-on context, ~2,300 tokens — on top of the contract itself. That is
- * exactly what the contract tells the model not to do ("read on demand, never paste wholesale").
- * These stubs name the files and the trigger instead.
- */
-const CLAUDE_POINTERS = [
-  '> Memory lives in `.ai/`. Read on demand with file tools, never wholesale:',
-  '> `.ai/CURRENT_TASK.md` (state), `.ai/ARCHITECTURE.md` (boundaries),',
-  '> `.ai/decisions/` (binding), `.ai/skills/` (actions).',
-];
-
-/** Only these tool formats have YAML frontmatter that must stay the very first bytes. */
-const NEEDS_FRONTMATTER = new Set<RuleFileKind>(['cursor', 'windsurf', 'copilot']);
-
-/**
- * Frontmatter must open *and* close, and must not contain a top-level heading.
- *
- * A bare `---\n\n# My rules\n---\n…` is a horizontal rule followed by an H1, not frontmatter.
- * An unterminated `---\n…` is a rule with no close. Treating either as frontmatter promoted a
- * user's `alwaysApply: false` to `true` and moved their heading inside a YAML block.
- */
-const FRONTMATTER_RE = /^---[ \t]*\r?\n((?:(?!^---[ \t]*\r?$)[\s\S])*?)^---[ \t]*\r?\n?/m;
-const hasUnterminatedFrontmatter = (text: string): boolean => {
-  if (!/^---[ \t]*\r?\n/.test(text)) return false;
-  return !/^---[ \t]*\r?$/m.test(text.slice(4));
-};
+/** Strips the `_Read by: …_` note older versions appended when tools shared AGENTS.md. */
 const SHARED_LINE_RE = /^_Read by: .*_$/m;
-
-/** Frontmatter engram generates for a rule file that does not have one yet. */
-function defaultFrontmatter(def: RuleFileDef): string {
-  switch (def.kind) {
-    case 'cursor':
-      // With alwaysApply, Cursor ignores globs and description. Emitting them anyway is noise.
-      return ['---', 'alwaysApply: true', '---', ''].join('\n');
-    case 'windsurf':
-      return ['---', 'trigger: always_on', '---', ''].join('\n');
-    case 'copilot':
-      return def.path.includes('/instructions/') ? ['---', 'applyTo: "**"', '---', ''].join('\n') : '';
-    default:
-      return '';
-  }
-}
-
-/**
- * Merge engram's defaults into *existing* frontmatter, key by key.
- *
- * A user's narrowed `globs` scope or `alwaysApply: false` is a deliberate decision. Silently
- * promoting it to an always-on global rule is data loss with no warning, so existing keys win.
- */
-function mergeFrontmatter(existing: string, defaults: string): string {
-  // No defaults to merge (e.g. `.github/copilot-instructions.md`, which has no frontmatter at
-  // all) means there is no frontmatter to emit. Returning `existing` here would splice the whole
-  // file back in ahead of the body and duplicate it on every render — the marker count is what
-  // exposed it: 1 → 3 after a few runs.
-  if (!defaults.trim()) return '';
-  const parsed = FRONTMATTER_RE.exec(existing);
-  if (!parsed) return defaults;
-  const keys = new Set(
-    (parsed[1] ?? '')
-      .split('\n')
-      .map((l) => /^([A-Za-z0-9_-]+)\s*:/.exec(l)?.[1])
-      .filter((k): k is string => Boolean(k)),
-  );
-  const additions = defaults
-    .replace(/^---\n/, '')
-    .replace(/\n---\n?$/, '')
-    .split('\n')
-    .filter((l) => l.trim() && !keys.has(/^([A-Za-z0-9_-]+)\s*:/.exec(l)?.[1] ?? ''));
-  // Always return *only* the frontmatter block. Returning the whole file here silently duplicated
-  // the entire body on the next render.
-  const merged = `${parsed[1] ?? ''}${additions.length ? `\n${additions.join('\n')}` : ''}`;
-  return `---\n${merged.trim()}\n---\n`;
-}
 
 export type RuleHealth = 'ok' | 'unbalanced-markers';
 
@@ -119,10 +43,11 @@ export interface RuleRenderResult {
 }
 
 /**
- * Render a full rule file: frontmatter + authored body + the engram contract.
+ * Render AGENTS.md: authored body + the engram contract.
  *
- * `existing` content is preserved: its frontmatter keys, its body, and anything engram does not own.
- * Only the contract block, the managed marker and the shared-reader note are regenerated.
+ * `existing` content is preserved — its body and anything engram does not own. Only the contract
+ * block and the managed marker are regenerated; the `_Read by: …_` note of older versions is
+ * stripped rather than refreshed, because there is no longer more than one tool to list.
  *
  * When the input carries an unbalanced contract marker the file is returned **byte-identical**:
  * engram cannot repair it safely, so it reports instead of guessing.
@@ -141,26 +66,14 @@ export function renderRuleFile(
   }
 
   const isAuthored = Boolean(existing && existing.trim());
-  let body: string;
-  let head: string;
-
-  if (isAuthored) {
-    const current = existing ?? '';
-    head = NEEDS_FRONTMATTER.has(def.kind) ? mergeFrontmatter(current, defaultFrontmatter(def)) : '';
-    const stripped = hasUnterminatedFrontmatter(current)
-      ? current
-      : current.replace(NEEDS_FRONTMATTER.has(def.kind) ? FRONTMATTER_RE : /^$/, '')
-      .replace(SHARED_LINE_RE, '')
-      .replaceAll(MANAGED_MARKER, '');
-    body = withoutContract(stripped);
-  } else {
-    head = defaultFrontmatter(def);
-    body = def.kind === 'claude' ? `${TODO_BLOCK(ctx.projectName)}\n\n${CLAUDE_POINTERS.join('\n')}` : TODO_BLOCK(ctx.projectName);
-  }
-
-  const shared = ctx.alsoReadBy.length > 0 ? `\n\n_Read by: ${ctx.alsoReadBy.join(', ')}._` : '';
-  const composed = `${head}${body.trim()}${shared}`.trim();
-  return { content: withContract(`${composed}\n\n${MANAGED_MARKER}`, ctx.extensions), health: 'ok' };
+  const body = isAuthored
+    ? // AGENTS.md is plain Markdown: no frontmatter to merge, because that machinery existed only
+      // for Cursor/Windsurf/Copilot and was deleted with them. `SHARED_LINE_RE` still strips the
+      // `_Read by: …_` note older versions appended when several tools shared AGENTS.md, so an
+      // upgrade does not leave a stale line behind that names tools engram no longer installs for.
+      withoutContract((existing ?? '').replace(SHARED_LINE_RE, '').replaceAll(MANAGED_MARKER, ''))
+    : TODO_BLOCK(ctx.projectName);
+  return { content: withContract(`${body.trim()}\n\n${MANAGED_MARKER}`, ctx.extensions), health: 'ok' };
 }
 
 /** Convenience wrapper for callers that only need the text (tests, `--dry-run`). */
@@ -190,7 +103,7 @@ export function refreshContract(
   }
   if (inspectMarkers(existing).health === 'absent') {
     // No block yet: adopt the file, preserving everything that is already there.
-    return renderRuleFile(def, { projectName: 'this project', alsoReadBy: [], extensions }, existing);
+    return renderRuleFile(def, { projectName: 'this project', extensions }, existing);
   }
   return { content: replaceContractBlock(existing, extensions), health: 'ok' };
 }

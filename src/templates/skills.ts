@@ -2,7 +2,7 @@
  * Layer 3 — canonical, tool-neutral skill specs.
  *
  * Stored once in `.ai/skills/<name>.md` with Agent-Skills-compatible frontmatter, then
- * materialised by `engram sync` into every tool that has native skill or slash-command support.
+ * materialised by `engram sync` into Pi's two carriers: `.agents/skills/` and `.pi/prompts/`.
  * The body must stay tool-neutral: no tool-specific syntax except a plain `ARGUMENTS` line.
  */
 

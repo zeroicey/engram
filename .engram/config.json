@@ -1,14 +1,3 @@
 {
-  "version": 1,
-  "tools": [
-    "agents",
-    "codex",
-    "claude",
-    "cursor",
-    "windsurf",
-    "copilot",
-    "gemini",
-    "pi",
-    "dsh"
-  ]
+  "version": 2
 }

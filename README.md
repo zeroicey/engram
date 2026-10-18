@@ -1,24 +1,27 @@
 # engram
 
 **Portable project memory + scaffold for AI coding tools.**
-One memory bank (`.ai/`) that Claude Code, Codex, Pi, DeepSeek Harness, Cursor, Windsurf, Copilot
-and Gemini CLI all read and write — plus a ≤1.5 KB fingerprint so a new session starts warm
+One memory bank (`.ai/`) for **Pi** — plus a ≤1.5 KB fingerprint so a new session starts warm
 instead of blank.
 
 > Why: AI does not get dumber because reasoning degrades. It gets dumber because context drifts,
 > old decisions are forgotten, and the same trap is re-discovered every third session. `engram`
 > makes that state physical, versioned and tool-independent.
 
+**Pi only, since 0.5.0.** engram used to adapt to nine AI coding tools; it now serves Pi and deletes
+everything only the other eight could reach. If you are upgrading, read [CHANGELOG.md](CHANGELOG.md) —
+`--tools`/`--all` are gone and the config format changed. `engram sync` prunes the old carriers and
+reports the old rule files it will not delete.
+
 ---
 
 ## 中文速览
 
-`engram` 是给 AI 编程工具用的**项目记忆与脚手架**：一个 `.ai/` 目录当唯一记忆库，各工具的规则
-文件（`AGENTS.md` / `CLAUDE.md` / `.cursor/rules/*.mdc` …）里挂同一份「查阅 + 写回」契约，
-`engram dump` 输出 ≤1.5KB 的动态指纹，新会话一句话接盘。
+`engram` 是给 Pi 用的**项目记忆与脚手架**：一个 `.ai/` 目录当唯一记忆库，`AGENTS.md` 里挂同一份
+「查阅 + 写回」契约，`engram dump` 输出 ≤1.5KB 的动态指纹，新会话一句话接盘。**只服务 Pi。**
 
 ```bash
-npx @zeroicey/engram init --tools agents,claude,cursor,pi   # 生成骨架 + 规则文件 + 元提示词
+npx @zeroicey/engram init                          # 生成骨架 + AGENTS.md + 元提示词
 npx @zeroicey/engram dump                         # ≤1.5KB 指纹，贴到新会话第一句
 npx @zeroicey/engram sync                         # 规则文件改动后刷新契约与技能载体
 ```
@@ -33,7 +36,7 @@ npx @zeroicey/engram sync                         # 规则文件改动后刷新�
 Requires Node ≥ 20. Zero runtime dependencies.
 
 ```bash
-npx @zeroicey/engram init    # or: add --tools claude,cursor,pi --notes "our norms"
+npx @zeroicey/engram init --notes "our norms"
 npx @zeroicey/engram dump    # ≤1.5 KB fingerprint
 npx @zeroicey/engram dump --json
 ```
@@ -45,7 +48,7 @@ Or pin it: `npm i -D @zeroicey/engram` then `npx engram …`.
 | Layer | What | Size | Loaded |
 | --- | --- | --- | --- |
 | **L0** dynamic injection | `engram dump` fingerprint | ≤ 1.5 KB (300–500 tokens) | every new session |
-| **L1** behaviour contract | `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, … | < 2 KB | always, by the tool |
+| **L1** behaviour contract | `AGENTS.md` | < 2 KB | always, by Pi |
 | **L2** knowledge bank | `.ai/` | unbounded | on demand, by file read |
 | **L3** action specs | `.ai/skills/*.md` → `/handoff`, `/audit`, … | ~1 KB each | on trigger |
 
@@ -58,7 +61,7 @@ Or pin it: `npm i -D @zeroicey/engram` then `npx engram …`.
 ├── sessions/          YYYY-MM-DD-<topic>-handoff.md
 ├── runbooks/          env-setup.md, deploy.md, release.md
 ├── pitfalls/cases/    symptom → root cause → fix → guard
-└── skills/            canonical, portable skill specs (one source for every tool)
+└── skills/            canonical skill specs (the single source engram materialises from)
 ```
 
 ## Commands
@@ -71,37 +74,37 @@ Or pin it: `npm i -D @zeroicey/engram` then `npx engram …`.
 | `engram sync` | refreshes contract blocks in place, re-materialises skill carriers |
 | `engram tools` | lists supported tools and their carriers |
 
-Flags: `--tools a,b,c`, `--all`, `--notes "team norms"`, `--force`, `--dry-run`, `--root <dir>`.
+Flags: `--notes "team norms"`, `--force`, `--dry-run`, `--root <dir>`.
 
 ## Supported tools
 
 | id | Rule file | Skill carriers |
 | --- | --- | --- |
-| `agents` | `AGENTS.md` (Codex, OpenCode, Cline, Amp, Zed…) | `.agents/skills/` |
-| `codex` | `AGENTS.md` | `.agents/skills/` (shared with `agents`) |
-| `claude` | `CLAUDE.md` | `.claude/skills/`, `.claude/commands/` |
-| `cursor` | `.cursor/rules/engram-memory.mdc` | `.cursor/skills/` |
-| `windsurf` | `.windsurf/rules/engram-memory.md` | — |
-| `copilot` | `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md` | `.github/prompts/` |
-| `gemini` | `GEMINI.md` | `.gemini/commands/*.toml` |
-| `pi` | `AGENTS.md` | `.agents/skills/` (shared), `.pi/prompts/` |
-| `dsh` | `AGENTS.md` | `.agents/skills/` (shared with `agents`/`codex`/`pi`) |
+| `pi` | `AGENTS.md` | `.agents/skills/` (Agent Skills), `.pi/prompts/` (slash commands) |
+
+**One client, deliberately.** engram supported nine tools, then three, then one. Claude Code, Codex,
+Cursor, Windsurf, GitHub Copilot, Gemini CLI and DeepSeek Harness were all removed — see
+`.ai/decisions/2026-10-18-serve-pi-only.md`. Their carrier directories are pruned automatically;
+their rule files are reported by `engram sync` but **never deleted**, because a rule file may contain
+a human-authored body that no marker can distinguish from engram's own.
+
+`--tools` and `--all` are gone. The CLI warns if you pass them rather than silently doing something
+different.
 
 ## The two design problems, solved
 
-**1. Rule files must be tool-idiomatic, but boilerplate is useless.** `engram init` does not write
-your `CLAUDE.md` for you. It writes the part only it can know — the `.ai/` contract, byte-identical
-in every tool, delimited by `<!-- engram:contract:start -->` / `<!-- engram:contract:end -->` — and
-then generates `.engram/BOOTSTRAP.md`: a meta-prompt for whichever AI assistant you are already
-talking to, containing your real project facts (stack, scripts, directories, existing rules, your
-`--notes`), the per-tool style rules and the section list to write. Your assistant writes the body;
-`engram sync` re-owns the contract. See `.ai/decisions/2026-10-01-contract-block-machine-owned.md`.
+**1. A rule file must describe *your* project, but boilerplate is useless.** `engram init` does not
+write your `AGENTS.md` body for you. It writes the part only it can know — the `.ai/` contract,
+delimited by `<!-- engram:contract:start -->` / `<!-- engram:contract:end -->` — and then generates
+`.engram/BOOTSTRAP.md`: a meta-prompt for the model you are already talking to, containing your real
+project facts (stack, scripts, directories, existing rules, your `--notes`), Pi's style rules and the
+section list to write. The model writes the body; `engram sync` re-owns the contract. See
+`.ai/decisions/2026-10-01-contract-block-machine-owned.md`.
 
-**2. Skills must not be copy-pasted once per tool.** `.ai/skills/<name>.md` is the single canonical
-spec, with Agent-Skills-compatible frontmatter. Each tool declares a *sink*
-(`<name>/SKILL.md`, `$ARGUMENTS` slash command, Gemini `{{args}}` TOML) and `engram sync`
-materialises it, stamped `<!-- engram:generated -->`. Tools without native skills get the Layer-1
-contract, which points at `.ai/skills/*.md` as a passive fallback.
+**2. Skills must not be copy-pasted once per client.** `.ai/skills/<name>.md` is the single canonical
+spec, with Agent-Skills-compatible frontmatter. The adapter declares a *sink*
+(`<name>/SKILL.md` for `.agents/skills/`, `<name>.md` with `$ARGUMENTS` for `.pi/prompts/`) and
+`engram sync` materialises it, stamped `<!-- engram:generated -->`.
 See `.ai/decisions/2026-10-01-canonical-skills-single-source.md`.
 
 ## Skills
@@ -114,7 +117,7 @@ See `.ai/decisions/2026-10-01-canonical-skills-single-source.md`.
 | `/audit [scope]` | before a release, after long absence | ranked drift list: code vs bank |
 
 Those four are only the starting set. `.ai/skills/` is the source of truth: drop
-`.ai/skills/<name>.md` with `name` + `description` frontmatter, run `engram sync`, and every tool
+`.ai/skills/<name>.md` with `name` + `description` frontmatter, run `engram sync`, and Pi's carriers
 gets its carrier. Delete the file and `sync` prunes the carrier — but only if engram generated it,
 so a hand-written skill in the same directory survives.
 

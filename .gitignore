@@ -8,3 +8,5 @@ build/
 coverage/
 npm-debug.log*
 .engram/drafts/
+# pi background-task output (local, machine-specific)
+.pi/tasks/
