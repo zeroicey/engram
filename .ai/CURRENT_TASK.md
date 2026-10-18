@@ -1,6 +1,6 @@
 # Current task
 
-**Status:** 🟡 Pi-only (0.5.0, unpublished) · goal engine M1+M2+M3-L3+M4 done; **L2 next** · **Updated:** 2026-10-18
+**Status:** 🟡 Pi-only (0.5.0, unpublished) · goal engine M1–M4 done; **L1+L2+L3 wake transports all live** · **Updated:** 2026-10-18
 
 ## Goal
 
@@ -87,8 +87,11 @@ is what lets a project like `research` own its own partitions while this is buil
 - [x] **2026-10-18 migration bug found by running one**: a retired carrier dir was pruned only for
       three hard-coded filename shapes, so `.github/prompts/*.prompt.md` survived every `sync` in
       every repo that ever used that adapter. Now it enumerates the directory
-- [ ] **M3 L1/L2**: L1 needs no code (a new run releases the latch); L2 (an in-process timer) is
-      still a `schedule-wake` effect with no transport — **the next task**
+- [x] **M3 L1/L2/L3**: L1 needs no code (a new run releases the latch); **L2 is an in-process timer**
+      (`schedule-wake`'s absolute `fireAt`, the `poll` peek, `wake-ready`, `pi.sendMessage(…,
+      {triggerTurn: true})`, deliver-then-claim) — verified live in RPC mode, see
+      `.ai/decisions/2026-10-18-l2-is-an-in-process-timer-that-asks-the-engine.md`; L3 is the unit whose
+      `ExecStopPost` claims, and it now delivers before it consumes too
 - [x] **2026-10-18 M4: the handoff opens the successor pane.** `engram goal handoff` drives herdr in
       five ordered steps — record → split beside the holder's pane → start pi → **transfer the baton**
       → prompt with a brief that names the bank files. The baton is the stop signal: the predecessor's
@@ -112,7 +115,8 @@ is what lets a project like `research` own its own partitions while this is buil
 - [x] **2026-10-18 this repo dogfoods the loop it builds**: `.engram/config.json` has
       `goal.enabled`, `.pi/extensions/engram-goal.ts` is committed, and the live run above was driven
       through the real CLI
-- [ ] **M4**: `goal_handoff` opening a successor pane through herdr and transferring the baton
+- [x] **M4**: `goal_handoff` opening a successor pane through herdr and transferring the baton
+      (landed 2026-10-18, `3a61fed`; the spawn itself is still the untested half — see the handoff)
 - [ ] **The user's question — "can I use this while developing?" — answered as far as it can be
       today**: the goal loop is usable now (create → work → report; a `wait` is releasable by a new
       run or an installed unit; a handoff opens a pane). The two gaps are structural and named in the
@@ -125,15 +129,27 @@ is what lets a project like `research` own its own partitions while this is buil
 
 ## Code state
 
-Branch `main`. `src/` is 33 TypeScript modules, `test/` 14 suites, 281 tests, zero runtime deps.
+Branch `main`. `src/` is 33 TypeScript modules, `test/` 15 suites, 304 tests, zero runtime deps.
 Build: `npm run build` → `build/`; tests run against compiled output on purpose. `engram dump`
-renders 1415 B here (budget 1500) with no active goal, so a goal is the elastic content that decides
-whether the budget holds — close a goal before measuring. **One tool adapter: `pi`.** The config is v2
-(`goal` opt-in only, now `on` in this repo) and `core/config.ts` no longer imports `adapters/`, so the
-layering allowlist is down to a single entry. 2026-10-18 added two leaf modules: `src/templates/systemd.ts`
+renders ≥1247 B here (budget 1500) with the active goal, so the elastic content still fits — close a
+goal before measuring. **One tool adapter: `pi`.** The config is v2 (`goal` opt-in only, now `on` in
+this repo) and `core/config.ts` no longer imports `adapters/`, so the layering allowlist is down to a
+single entry. 2026-10-18 added two leaf modules: `src/templates/systemd.ts`
 (the unit, a pure string) and `src/core/herdr.ts` (the delivery hop, all I/O injectable). `core/` now
 spawns a process from two modules — `goal-eval.ts` for a `cmd:` gate and `herdr.ts` for a delivery —
-and both keep every failure mode distinguishable rather than collapsing to `null`.
+and both keep every failure mode distinguishable rather than collapsing to `null`. Reading the machine
+is `commands/`' job: the wake-condition observation (`fs` + `process.kill`, artifact paths confined by
+`staysInsideRoot`) lives in `commands/goal.ts`, which is why `templates/` still never imports `node:fs`.
+
+The L2 transport is one host-side operation and no rules: the engine publishes an absolute `fireAt`,
+the extension arms a timer, and at that instant it *asks* `engram goal event --type poll`. Whether the
+condition holds is decided in `core/goal.ts` (`time` from the wait's own `requestedAt`, the other two
+from the observation the CLI passes in), which is what keeps the generated file a marshaller — and what
+keeps an artifact path on the same confinement rule as `done_when.file`. A satisfied poll only *peeks*
+(`wake-ready`); the release is a separate `wake` claim that the host sends **after** the message has
+been delivered, in both transports. That ordering is the difference between a failed delivery and a
+parked goal nobody is watching — see
+`.ai/pitfalls/cases/a-wake-consumed-before-it-was-delivered.md`.
 
 The `init` precondition is a **command-level** check in `cmdInit`, not inside `runInit`: a refused
 init must not have touched the filesystem at all, and keeping it in the command handler makes that
@@ -156,6 +172,15 @@ other's type.
    while `pendingHandoff` is set, so a baton transfer that does not retire it leaves the successor
    never-nudged and escalates "requested but never taken" about a handoff that landed. Ask of any
    `pending*` field: which transition retires it, on every path?
+- `.ai/pitfalls/cases/a-wake-consumed-before-it-was-delivered.md` — the consume-then-deliver ordering in
+  both transports: a satisfied `poll` peeks, the claim releases, and `runGoalWake` delivers before it
+  writes. Ask of any transport: if delivery fails here, what still knows the goal is waiting?
+- `.ai/pitfalls/cases/a-cleared-wake-left-its-timer-armed.md` — a transition that sets `wake: null`
+  must emit `clear-wake` in the same step, or the record is right and the host is still armed. Ask it of
+  every branch that writes the field.
+- `.ai/pitfalls/cases/a-refused-event-read-as-success.md` — an `ignore` effect had no reader, so
+  `ok: true, reason: null` let `/goal` print "goal woken" for a wake the engine refused. An effect a host
+  cannot see is a decision the engine did not make.
 - `.ai/pitfalls/cases/ambient-identity-silently-re-owns-the-goal.md` — a default that reads
   `process.env` changes who holds the baton; an in-process CLI test must scrub `PI_SESSION_FILE` and
   `HERDR_PANE_ID` (use `runCli` from `test/helpers.ts`), and a refusal is read from
@@ -190,33 +215,32 @@ other's type.
 
 Next action, in order:
 
-1. **L2 — the in-process timer transport.** `engram goal wake` is proven and `schedule-wake` emits a
-   token, a condition and a deadline that nothing consumes. Rule 4 of
-   `.ai/decisions/2026-10-18-treat-waiting-as-a-first-class-goal-state-with-a-self-wake-c.md`: a
-   background task whose only job is to wait, so its completion *is* the timer. Rule 5 still holds — a
-   timer is not a long job, a 16-hour job is.
-2. **Then run one real multi-hour goal**, still the largest untested assumption: the
-   commit-at-settlement rule, the traceability promise and the 24h liveness deadline have been
-   reasoned about, never exercised. The live jobs so far were `sleep 25` and one handoff.
-3. **Then L2**: an in-process timer transport, so a `time` wait that is hours long does not need a
-   unit.
-4. Publish 0.5.0 (**human**, 2FA), then let `research` declare `.ai/sections.json` themselves — that
+1. **Run one real multi-hour goal.** Still the largest untested assumption: the commit-at-settlement
+   rule, the traceability promise and the 24h liveness deadline have been reasoned about, never
+   exercised. The live jobs so far were `sleep 25`, one handoff, a 12-second L2 timer, and 24h of
+   deadline that nobody has ever waited out. Now that L2 exists the cheapest honest version is a goal
+   whose only work is a `wait` of 30–60 minutes: the timer fires, the engine releases the latch, and a
+   real turn judges the result.
+2. **Exercise the M4 spawn end to end** — and the interesting variant is a handoff *during* a wait,
+   where the successor must re-arm from `goal.json` and the predecessor's timer must be refused.
+3. Publish 0.5.0 (**human**, 2FA), then let `research` declare `.ai/sections.json` themselves — that
    is the acceptance test for the extension surface, and it must be done by them, not by us.
 
-Two provisional answers from the M1 decision are still waiting for a verdict, and nothing above
-depends on them: a wake arriving while `blocked` re-raises (instead of queueing), and a `time` wait
-longer than 24h gets its own deadline. See
-`.ai/decisions/2026-10-18-goal-record-schema-and-report-surface.md` §Provisional.
+One provisional answer from the M1 decision is still waiting for a verdict, and nothing above depends
+on it: a `time` wait longer than 24h gets its own deadline. See
+`.ai/decisions/2026-10-18-goal-record-schema-and-report-surface.md` §Provisional. (The other one — a
+wake arriving while `blocked` — was settled by the L2 work: it re-raises, and the effect is now
+visible.)
 
-**New, found while testing the baton refusal and deliberately not fixed:** an *ignored* event is
-invisible to the model. `responseFromEffects` maps only `nudge` → `message` and `escalate` → `notify`,
-so a refused report returns `ok: true` with `message: null` and the extension settles in silence. It
-deserves its own decision, because the wording is the model's entire feedback channel.
+**Fixed in the L2 change, so no longer a loose end:** an *ignored* event used to be invisible —
+`responseFromEffects` read `nudge` → `message` and `escalate` → `notify`, and nothing read `ignore`, so
+a refused wake returned `ok: true, reason: null` and `/goal` printed "goal woken" for a refusal. The
+refusal is now the `reason`. See `.ai/pitfalls/cases/a-refused-event-read-as-success.md`.
 
 Candidate v0.5 work, in order of leverage:
 1. `engram doctor` — machine-checkable bank drift: dangling `.ai/` paths, sections whose `dir` no
    longer exists, carriers that disagree with their canonical skill, a goal whose `done_when` is
    unreadable.
-2. The `dump` budget: at 1415/1500 with no active goal, a goal record is what decides whether it
+2. The `dump` budget: at 1264/1500 *with* an active goal, the goal record is what decides whether it
    holds. Emit a pointer naming what was dropped instead of raising the number.
 3. `/verify` — run the project's gate and record the result (four write verbs, zero read verbs).

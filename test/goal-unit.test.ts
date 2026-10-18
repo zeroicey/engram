@@ -309,7 +309,7 @@ test('a deliverable wake reaches the baton holder with the engine’s own messag
   }
 });
 
-test('unreachable herdr is reported, never swallowed', async () => {
+test('unreachable herdr leaves the wait latched, so the wake can still be delivered', async () => {
   const { sb, id } = await goalSandbox();
   try {
     await latchWait(sb, id, { sessionPath: '/sessions/mine.jsonl', paneId: 'w13:p1' });
@@ -320,11 +320,39 @@ test('unreachable herdr is reported, never swallowed', async () => {
       deliver: true,
       herdr: { run: async () => ({ status: null, stdout: '', error: 'ENOENT: spawn herdr' }), bin: 'herdr' },
     });
-    assert.equal(r.exitCode, 0, 'the wake is latched, so the command did not fail');
+    assert.equal(r.exitCode, 1, 'nothing was delivered, so the command did not succeed');
     assert.match(r.lines.join('\n'), /NOT DELIVERED/);
-    // The token is still consumed, so a replay cannot double-charge; the deadline is what recovers it.
+    assert.match(r.lines.join('\n'), /still waiting/);
+    // The wake must **not** be consumed. This test used to assert the opposite (`status: running`) with
+    // a comment saying "the token is still consumed, so a replay cannot double-charge; the deadline is
+    // what recovers it" — false twice over. A wake nobody received had released the latch, and the
+    // liveness deadline only covers a goal that is still `waiting`, so `onReconcile` never looked at it.
+    // A plausible reason in a test is how a defect gets locked in.
     const after = await readGoalRecord(sb.root, id);
-    assert.equal(after.record?.status, 'running');
+    assert.equal(after.record?.status, 'waiting');
+    assert.equal(after.record?.wake?.token, 'wake-1');
+
+    // Which is what makes a retry meaningful: the same command, with herdr reachable, wakes the goal.
+    const calls: string[][] = [];
+    const retry = await runGoalWake({
+      root: sb.root,
+      id,
+      reason: 'training exited',
+      token: 'wake-1',
+      deliver: true,
+      herdr: {
+        run: async (argv) => {
+          calls.push(argv);
+          return { status: 0, stdout: '{"result":{}}', error: null };
+        },
+      },
+    });
+    assert.equal(retry.exitCode, 0, retry.lines.join('\n'));
+    assert.match(retry.lines.join('\n'), /deliver: delivered to w13:p1/);
+    assert.deepEqual(calls[0]?.slice(0, 3), ['agent', 'prompt', 'w13:p1']);
+    const done = await readGoalRecord(sb.root, id);
+    assert.equal(done.record?.status, 'running');
+    assert.equal(done.record?.wake, null);
   } finally {
     await sb.cleanup();
   }
@@ -369,8 +397,12 @@ test('a goal with no baton says why nothing was delivered', async () => {
     const r = await runGoalWake({ root: sb.root, id, reason: 'training exited', deliver: true, herdr: { run: async () => {
       throw new Error('herdr must not be consulted when there is no address');
     } } });
-    assert.equal(r.exitCode, 0);
+    assert.equal(r.exitCode, 1, 'no address means nothing was delivered, so this is a failure');
     assert.match(r.lines.join('\n'), /NOT DELIVERED — the goal has no baton holder/);
+    // And the wait is untouched: an undeliverable wake must not release the latch it could not use.
+    const after = await readGoalRecord(sb.root, id);
+    assert.equal(after.record?.status, 'waiting');
+    assert.equal(after.record?.wake?.token, 'wake-1');
   } finally {
     await sb.cleanup();
   }

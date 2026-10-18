@@ -140,8 +140,23 @@ export type GoalEvent =
   | { kind: 'report'; now: string; report: GoalReport; digest?: string | null; sessionPath?: string }
   /** The `done_when` evaluator's result, fed back after an `evaluate` effect ran. */
   | { kind: 'verdict'; now: string; passed: boolean; detail: string; digest?: string | null }
-  /** An external wake (`goal wake <id> --reason …`), addressed to the goal, not to a pane. */
-  | { kind: 'wake'; now: string; token: string; reason: string }
+  /**
+   * An external wake (`goal wake <id> --reason …`), addressed to the goal, not to a pane.
+   *
+   * `sessionPath` is the *emitter's* identity, when it has one, and it is not a change of addressee:
+   * the token still resolves against `goal.json`. It exists because an in-process timer survives a
+   * handoff in the pane that armed it — see the guard in `reduce`.
+   */
+  | { kind: 'wake'; now: string; token: string; reason: string; sessionPath?: string }
+  /**
+   * The host asking whether the wait's condition has come true — the timer reaching its plan, or a
+   * poll finding a pid gone or an artifact present.
+   *
+   * A question, not a claim: `observed` is what the CLI saw on the machine (and is meaningless for
+   * `time`, which the engine times itself), and the engine decides whether that is a wake. The host
+   * owns the clock and nothing else; there is no engine process while pi is idle.
+   */
+  | { kind: 'poll'; now: string; token: string; observed: boolean; sessionPath?: string }
   /** Session start / restart: re-arm a live wait, or escalate one whose deadline has passed. */
   | { kind: 'reconcile'; now: string }
   | { kind: 'close'; now: string; reason: Exclude<CloseReason, 'completed'> };
@@ -151,10 +166,19 @@ export type GoalEffect =
   | { kind: 'nudge'; reason: 'continue' | 'classify' | 'wake' | 'verdict-failed'; message: string }
   /** Stay quiet. A latched wait or a human-facing block must not burn tokens. */
   | { kind: 'silent'; reason: 'waiting' | 'blocked' | 'done' | 'handoff-requested' }
+  /**
+   * The wait's condition is true, and the message to deliver is here — but **nothing has moved yet**.
+   *
+   * A question must not be the thing that consumes its own answer: a host that cannot deliver the
+   * message (a stale runtime after a reload, a session replacement, a shutdown) has consumed nothing,
+   * so the wait stays latched and the next reconcile or retry can still wake it. The claim is
+   * `kind: 'wake'`, and it is the only thing that releases the latch.
+   */
+  | { kind: 'wake-ready'; token: string; reason: string; message: string }
   | { kind: 'escalate'; severity: 'needs-input' | 'stuck'; message: string }
   /** Run the evaluator, then feed the answer back as a `verdict` event. */
   | { kind: 'evaluate'; doneWhen: DoneWhen }
-  | { kind: 'schedule-wake'; token: string; condition: WakeCondition; deadlineAt: string }
+  | { kind: 'schedule-wake'; token: string; condition: WakeCondition; fireAt: string | null; deadlineAt: string }
   | { kind: 'clear-wake'; token: string }
   | { kind: 'handoff'; message: string }
   | { kind: 'done-observed'; message: string }
@@ -256,6 +280,52 @@ const silent = (reason: Extract<GoalEffect, { kind: 'silent' }>['reason']): Goal
  * be escalated at hour 24 just because the default is a day: the deadline is the larger of the
  * default and the planned time plus a minute of grace.
  */
+/**
+ * The instant a wake's *condition* is planned to be satisfied — `null` for the conditions that have
+ * no plan.
+ *
+ * A `time` wait has one; a `process` or an `artifact` is observed rather than scheduled, so the host
+ * polls and there is nothing to name.
+ *
+ * It is absolute, and derived from the wait's own `requestedAt` rather than from "now", because
+ * `reconcile` re-arms the same wait after a restart: a fire time computed from the new `now` would
+ * restart the full duration, so a 6-hour wait that survived a restart would take twelve. With the
+ * absolute instant, a restart *after* the planned time asks immediately, which is the honest answer —
+ * the time already elapsed.
+ */
+function fireAtFor(condition: WakeCondition, requestedAt: string): string | null {
+  if (condition.kind !== 'time') return null;
+  const from = Date.parse(requestedAt);
+  // Same total-not-throwing rule as `deadlineFor`: a hand-edited timestamp must not throw inside a
+  // lifecycle hook, and `null` is already the "no plan" answer.
+  if (!Number.isFinite(from)) return null;
+  return new Date(from + condition.seconds * 1000).toISOString();
+}
+
+/**
+ * What ended, in the words the wake message needs.
+ *
+ * The model judges the *event* against `done_when`, so "pid 4242 exited" and "out/eval.json appeared"
+ * are what it has to read — not `Wake: not yet`. Built here rather than by the host because "what
+ * happened" is the engine's account of its own condition; the host only watched for it.
+ */
+function describeWakeCondition(condition: WakeCondition): string {
+  if (condition.kind === 'time') return `${condition.seconds}s elapsed`;
+  if (condition.kind === 'artifact') return `${condition.path} appeared`;
+  return `pid ${condition.pid} exited`;
+}
+
+/**
+ * The engine's wake message.
+ *
+ * One builder for both sides of the delivery: the host delivers the message from `wake-ready` and the
+ * claim's message is then discarded, so two builders would be two texts for one event — and the one a
+ * model reads would be whichever path happened to run.
+ */
+function wakeMessage(reason: string): string {
+  return `Wake: ${reason}. A process exiting is not success — judge it against done_when before reporting done.`;
+}
+
 function deadlineFor(condition: WakeCondition, now: string, limits: GoalLimits): string {
   const nowMs = Date.parse(now);
   // `reduce` is documented as total, and its `now` is caller-supplied. An unparseable timestamp used
@@ -310,6 +380,29 @@ export function reduce(
     }
   }
 
+  // A wake is the one event whose guard is **one-sided**, and both halves are deliberate.
+  //
+  // An *unidentified* emitter is legitimate: the wake is addressed to the goal, not to a pane (rule
+  // 6), so a systemd unit's `ExecStopPost`, herdr's delivery and `goal wake` typed by a human all
+  // arrive without a session — refusing them would delete L3 and the human escape hatch in one line.
+  //
+  // An *identified* emitter that is not the holder is not legitimate, and this became reachable
+  // when the in-process timer arrived: a wait survives a handoff, so the predecessor's timer is still
+  // armed in a pane that no longer holds the baton, while the successor arms its own at
+  // `session_start`. Whoever fires first consumes the token. Letting the predecessor win left the
+  // goal `running` with the wake consumed in the wrong pane and the successor idle — a parked goal
+  // that nothing was watching, since `waiting` was the only state with a deadline. So a claim is
+  // refused; a stranger is not.
+  //
+  // `poll` is the same guard for the same reason: it is the timer asking, not a human.
+  if (
+    (event.kind === 'wake' || event.kind === 'poll') &&
+    event.sessionPath !== undefined &&
+    !holdsBaton(record, event.sessionPath)
+  ) {
+    return step(record, [{ kind: 'ignore', reason: 'not the baton holder for this goal' }]);
+  }
+
   switch (event.kind) {
     case 'run-started':
       return onRunStarted(record, event.now, limits);
@@ -321,6 +414,8 @@ export function reduce(
       return onVerdict(record, event.now, event.passed, event.detail, event.digest ?? null, limits);
     case 'wake':
       return onWake(record, event.now, event.token, event.reason);
+    case 'poll':
+      return onPoll(record, event.now, event.token, event.observed);
     case 'reconcile':
       return onReconcile(record, event.now, limits);
     case 'close':
@@ -492,10 +587,19 @@ function onProgress(
     ? next(record, now, { status: 'running', wake: null })
     : next(record, now, {});
 
+  // A report that releases a wait — or that merely overwrites it via `patch` below — must cancel the
+  // timer, exactly like every other path that clears `wake` (`onRunStarted`, `onBlocked`, `onVerdict`,
+  // `onClose`). This was the one branch that dropped a wake and emitted no `clear-wake`, so a host
+  // that consumes the effect kept a timer armed for a token the record no longer held. Invisible while
+  // nothing consumed the effect; once the L2 timer did, that stale timer asked the engine about a
+  // token it had already released — and the answer, for a goal that is now `running`, is nothing.
+  const dropped: GoalEffect[] = record.wake ? [{ kind: 'clear-wake', token: record.wake.token }] : [];
+
   // The classification gate: a goal with no `done_when` may not consume rounds. This is what stops
   // an unverifiable goal before it burns a night of tokens.
   if (brief.doneWhen === null) {
     return step(next(released, now, { reports: released.reports + 1, lastNote: note, unreportedSettles: 0 }), [
+      ...dropped,
       { kind: 'nudge', reason: 'classify', message: CLASSIFY_MESSAGE },
     ]);
   }
@@ -537,6 +641,7 @@ function onProgress(
         blocker: { reason: REASON_NO_PROGRESS, repeats: 1, needs: 'human review', raisedAt: now },
       }),
       [
+        ...dropped,
         {
           kind: 'escalate',
           severity: 'stuck',
@@ -546,7 +651,10 @@ function onProgress(
       ],
     );
   }
-  return step(next(released, now, patch), [{ kind: 'nudge', reason: 'continue', message: PROGRESS_MESSAGE }]);
+  return step(next(released, now, patch), [
+    ...dropped,
+    { kind: 'nudge', reason: 'continue', message: PROGRESS_MESSAGE },
+  ]);
 }
 
 function onWait(
@@ -558,12 +666,16 @@ function onWait(
 ): GoalStep {
   const token = `wake-${record.wakeSeq + 1}`;
   const deadlineAt = deadlineFor(condition, now, limits);
+  // The plan, not the deadline: `fireAt` is when the condition is expected to hold, `deadlineAt` when
+  // the engine stops waiting for it. The host arms its timer for the former and reports to the engine
+  // at the latter.
+  const fireAt = fireAtFor(condition, now);
   const wake: WakeRecord = { token, condition, requestedAt: now, deadlineAt, handled: false };
   const effects: GoalEffect[] = [];
   // Replacing a wait must cancel the old timer, or the old token would wake the goal out of the new
   // wait — a wake the goal can no longer match, which reads as a lost notification.
   if (record.wake) effects.push({ kind: 'clear-wake', token: record.wake.token });
-  effects.push({ kind: 'schedule-wake', token, condition, deadlineAt }, silent('waiting'));
+  effects.push({ kind: 'schedule-wake', token, condition, fireAt, deadlineAt }, silent('waiting'));
 
   return step(
     next(record, now, {
@@ -677,6 +789,56 @@ function onVerdict(
   ]);
 }
 
+/**
+ * A poll: the host asking whether the wait's condition is true yet.
+ *
+ * Why this is an event and not a convention: the host owns the clock — there is no engine process
+ * while pi is idle — and *nothing else*. Whether the condition holds is the engine's call, so `time`
+ * is decided here from the wait's own `requestedAt` and never from the host's arithmetic, and the two
+ * observed conditions arrive as an answer the CLI looked up. A satisfied poll is a wake and shares its
+ * transition exactly: "the condition came true" and "someone says it is over" differ in who decided,
+ * not in what happens next.
+ *
+ * A poll that is not satisfied answers `silent('waiting')` rather than nothing: "still waiting" is
+ * information the host acts on — it is the answer that says *ask again* — and inferring it from an
+ * empty effect list would make an empty list mean two different things (see
+ * `pitfalls/cases/destructive-cleanup-on-empty-input.md`).
+ *
+ * A poll that *is* satisfied answers `wake-ready` and changes nothing. The consumption is the claim
+ * (`onWake`), and it is a separate call on purpose — see `wake-ready`.
+ */
+function onPoll(record: GoalRecord, now: string, token: string, observed: boolean): GoalStep {
+  if (isClosed(record)) return step(record, [{ kind: 'ignore', reason: 'goal is closed' }]);
+  if (record.status !== 'waiting' || record.wake === null) return step(record);
+  if (record.wake.token !== token || record.wake.handled) return step(record);
+  if (!conditionDue(record.wake.condition, record.wake.requestedAt, now, observed)) {
+    return step(record, [silent('waiting')]);
+  }
+  const reason = describeWakeCondition(record.wake.condition);
+  return step(record, [{ kind: 'wake-ready', token, reason, message: wakeMessage(reason) }]);
+}
+
+/**
+ * Is the condition satisfied?
+ *
+ * `time` is the engine's own clock, so an early poll — a host that clamped a long delay, a machine
+ * whose clock moved — cannot wake the goal ahead of the plan. A `requestedAt` that cannot be parsed is
+ * "not due" rather than "due": the wait still has its liveness deadline, and a premature wake would
+ * spend a turn on nothing.
+ */
+function conditionDue(
+  condition: WakeCondition,
+  requestedAt: string,
+  now: string,
+  observed: boolean,
+): boolean {
+  if (condition.kind !== 'time') return observed;
+  const from = Date.parse(requestedAt);
+  const at = Date.parse(now);
+  if (!Number.isFinite(from) || !Number.isFinite(at)) return false;
+  return at >= from + condition.seconds * 1000;
+}
+
 function onWake(record: GoalRecord, now: string, token: string, reason: string): GoalStep {
   if (isClosed(record)) return step(record, [{ kind: 'ignore', reason: 'goal is closed' }]);
 
@@ -690,11 +852,7 @@ function onWake(record: GoalRecord, now: string, token: string, reason: string):
     // notification by construction, which is exactly what this file's own comment forbids.
     return step(next(record, now, { status: 'running', wake: null }), [
       { kind: 'clear-wake', token },
-      {
-        kind: 'nudge',
-        reason: 'wake',
-        message: `Wake: ${reason}. A process exiting is not success — judge it against done_when before reporting done.`,
-      },
+      { kind: 'nudge', reason: 'wake', message: wakeMessage(reason) },
     ]);
   }
 
@@ -729,6 +887,10 @@ function onReconcile(record: GoalRecord, now: string, limits: GoalLimits): GoalS
           blocker: { reason: REASON_WAIT_EXPIRED, repeats: 1, needs: 'human', raisedAt: now },
         }),
         [
+          // The dropped wake still has to cancel its timer. Every other path that clears `wake` says
+          // so; this one set `wake: null` and left the host's timer armed for a token the record no
+          // longer held — the same leak as the `blocked` branch of `onRunStarted`.
+          ...(record.wake ? [{ kind: 'clear-wake' as const, token: record.wake.token }] : []),
           {
             kind: 'escalate',
             severity: 'stuck',
@@ -738,9 +900,16 @@ function onReconcile(record: GoalRecord, now: string, limits: GoalLimits): GoalS
         ],
       );
     }
-    // A restart must not swallow a live wait: re-arm it with the remaining time.
+    // A restart must not swallow a live wait: re-arm it with the same *absolute* plan, so the
+    // remaining time is the remainder rather than the full duration again.
     return step(record, [
-      { kind: 'schedule-wake', token: record.wake.token, condition: record.wake.condition, deadlineAt: record.wake.deadlineAt },
+      {
+        kind: 'schedule-wake',
+        token: record.wake.token,
+        condition: record.wake.condition,
+        fireAt: fireAtFor(record.wake.condition, record.wake.requestedAt),
+        deadlineAt: record.wake.deadlineAt,
+      },
     ]);
   }
 

@@ -35,7 +35,7 @@ import {
 } from '../core/herdr.js';
 import { engramCommand, goalUnitName, goalUnitSource, unitOutcome } from '../templates/systemd.js';
 import { workingTreeDigest } from '../core/git.js';
-import { evaluateDoneWhen, type DoneVerdict, type EvalDeps } from '../core/goal-eval.js';
+import { evaluateDoneWhen, staysInsideRoot, type DoneVerdict, type EvalDeps } from '../core/goal-eval.js';
 import {
   activeGoal,
   damagedGoals,
@@ -58,6 +58,7 @@ import {
   type GoalEvent,
   type GoalRecord,
   type GoalReport,
+  type WakeCondition,
 } from '../core/goal.js';
 import { idleResponse, responseFromEffects, type GoalResponse } from '../core/goal-host.js';
 
@@ -318,22 +319,34 @@ export interface GoalWakeOptions {
  *
  * The holder is resolved *now*, from `goal.json` — which is what lets a wake survive a handoff: the
  * pane recorded when the goal was created may be long gone, and the current holder's address is the
- * only one worth using. A failure is reported loudly and is never a lost wake: the token stays
- * latched, so a new run or the liveness deadline still recovers the goal.
+ * only one worth using.
+ *
+ * A failure is reported loudly and is never a lost wake, because the **caller** writes the record only
+ * after this returns `ok`. That ordering is the whole guarantee and it was once the other way round:
+ * the transition was persisted first, so a failed delivery left a `running` goal with no latched token
+ * for a later reconcile to re-arm — while this comment claimed the token stayed latched. A claim in a
+ * comment that the code does not enforce is worse than no claim.
  */
-async function deliverNudge(record: GoalRecord, message: string, deps: HerdrDeps): Promise<string[]> {
+async function deliverNudge(
+  record: GoalRecord,
+  message: string,
+  deps: HerdrDeps,
+): Promise<{ ok: boolean; lines: string[] }> {
   let pane = record.baton?.paneId ?? null;
   if (pane === null) {
     const sessionPath = record.baton?.sessionPath;
     if (sessionPath === undefined) {
-      return ['  deliver: NOT DELIVERED — the goal has no baton holder, so there is no pane to wake'];
+      return { ok: false, lines: ['  deliver: NOT DELIVERED — the goal has no baton holder, so there is no pane to wake'] };
     }
     const resolved = await paneForSessionPath(sessionPath, deps);
-    if (resolved.pane === null) return [`  deliver: NOT DELIVERED — ${resolved.detail}`];
+    if (resolved.pane === null) return { ok: false, lines: [`  deliver: NOT DELIVERED — ${resolved.detail}`] };
     pane = resolved.pane;
   }
   const res = await promptPane(pane, message, deps);
-  return [res.ok ? `  deliver: ${res.detail}` : `  deliver: NOT DELIVERED — ${res.detail}`];
+  return {
+    ok: res.ok,
+    lines: [res.ok ? `  deliver: ${res.detail}` : `  deliver: NOT DELIVERED — ${res.detail}`],
+  };
 }
 
 /**
@@ -371,16 +384,34 @@ export async function runGoalWake(opts: GoalWakeOptions): Promise<GoalCliResult>
   if (step.record === active.record) {
     return ok([`wake ${token} ignored (already handled, or the goal is not waiting)`]);
   }
-  await writeGoalRecord(opts.root, step.record);
+
   const lines = [`wake ${token} accepted: ${reason}`, `  status: ${step.record.status}`];
   // An escalation carries a message too: a job that ended while the goal was `blocked` is news for
   // the human who is the blocker, so it must reach them the same way a nudge does.
   const nudge = step.effects.find((e) => e.kind === 'nudge' || e.kind === 'escalate');
-  if (nudge !== undefined) {
-    lines.push(...(opts.deliver ? await deliverNudge(step.record, nudge.message, opts.herdr ?? {}) : [
-      `  deliver: herdr agent prompt <baton pane> — "${reason}"`,
-    ]));
+
+  // **Deliver, then record.** The engine consumes the wait here, and a wait that has been consumed
+  // cannot be delivered again — so writing the record first would destroy the one thing a failed
+  // delivery needs: a latched token that the next `session_start` can re-arm. The cost of this order is
+  // the friendlier one: a crash between the two re-wakes and spends one extra turn (at-least-once),
+  // never a parked goal nothing is watching.
+  if (nudge !== undefined && opts.deliver) {
+    const delivered = await deliverNudge(step.record, nudge.message, opts.herdr ?? {});
+    lines.push(...delivered.lines);
+    if (!delivered.ok) {
+      // The token is still latched and the goal is still `waiting`, so this is not a lost wake:
+      // the liveness deadline, the next run and the next `session_start` all still apply. Exit 1 so a
+      // human running this by hand sees that nothing was delivered, and so a caller that *does* care
+      // can retry. systemd's `ExecStopPost` ignores it either way, and its next start re-arms from
+      // `goal.json`.
+      lines.push(`  ${active.id} is still waiting — the wake was not consumed; re-running this or starting a session will retry`);
+      return { exitCode: 1, lines, warnings: describeEffects(step.effects) };
+    }
+  } else if (nudge !== undefined) {
+    lines.push(`  deliver: herdr agent prompt <baton pane> — "${reason}"`);
   }
+
+  await writeGoalRecord(opts.root, step.record);
   return ok(lines);
 }
 
@@ -771,6 +802,34 @@ export async function runGoalReport(
 // ---------------------------------------------------------------- the host wire surface
 
 /**
+ * Has the wait's condition been observed on this machine?
+ *
+ * Only `process` and `artifact` reach here. `time` is the engine's own clock, so there is nothing to
+ * look at — the reducer decides it from the wait's `requestedAt`.
+ *
+ * Two failure modes are deliberately *not* folded into `null`: an artifact path outside the project is
+ * refused exactly like `done_when.file` and checklist evidence are (a declaration is not a way out of
+ * the project), and an unknown error from the pid probe is "still there" rather than "gone", because
+ * a false wake spends a turn on nothing while a late one is covered by the deadline.
+ */
+async function conditionObserved(root: string, condition: WakeCondition): Promise<boolean> {
+  if (condition.kind === 'time') return false;
+  if (condition.kind === 'artifact') {
+    const inside = staysInsideRoot(root, condition.path);
+    if (!inside.ok) return false;
+    return pathExists(inside.resolved);
+  }
+  // `kill(pid, 0)` sends no signal: it asks the OS whether the process exists. EPERM means it exists
+  // and belongs to another user — alive, not exited. Only ESRCH ("no such process") is an exit.
+  try {
+    process.kill(condition.pid, 0);
+    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+/**
  * One pi lifecycle event in, one `GoalResponse` out — the entire contract the generated extension
  * depends on.
  *
@@ -781,7 +840,7 @@ export async function runGoalReport(
  * `agent_before_settle` takes the session down.
  */
 export interface HostEventInput {
-  /** `settled` | `run-started` | `wake` | `reconcile` | `report` | `status` */
+  /** `settled` | `run-started` | `wake` | `poll` | `reconcile` | `report` | `status` */
   event: string;
   sessionPath?: string;
   reason?: string;
@@ -819,7 +878,33 @@ export async function runGoalEvent(
     case 'wake': {
       const token = input.token ?? active.record.wake?.token;
       if (token === undefined) return idleResponse('not waiting; nothing to wake');
-      event = { kind: 'wake', now, token, reason: input.reason ?? 'external wake' };
+      // The emitter's identity travels with the wake so the reducer can refuse a stale holder's timer.
+      // An absent one stays absent: an unidentified emitter is a legitimate wake (a unit, a human).
+      event = {
+        kind: 'wake',
+        now,
+        token,
+        reason: input.reason ?? 'external wake',
+        ...(input.sessionPath ? { sessionPath: input.sessionPath } : {}),
+      };
+      break;
+    }
+    case 'poll': {
+      const token = input.token ?? active.record.wake?.token;
+      if (token === undefined) return idleResponse('not waiting; nothing to poll');
+      // The one place a wake condition is looked at, and it lives here rather than in the generated
+      // extension for two reasons: reading the machine is I/O (`core/` is a pure reducer), and a
+      // declared artifact path has to be confined by the same rule as every other declared path in the
+      // project. The extension holds the clock and no observation rule at all.
+      const condition = active.record.wake?.condition;
+      const observed = condition === undefined ? false : await conditionObserved(root, condition);
+      event = {
+        kind: 'poll',
+        now,
+        token,
+        observed,
+        ...(input.sessionPath ? { sessionPath: input.sessionPath } : {}),
+      };
       break;
     }
     case 'status':

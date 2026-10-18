@@ -12,6 +12,9 @@
  * - which pi lifecycle event maps to which `engram` event,
  * - `agent_before_settle` → `{ continue: true, entries: [...] }`, exactly once,
  * - the 85% context reminder, once per crossing,
+ * - the **L2 wake transport**: an in-process timer that applies `schedule-wake` / `clear-wake` and,
+ *   when its clock says the wait is due, asks the engine whether the wake has arrived and starts a run
+ *   with the engine's own message,
  * - a `goal_report` tool whose arguments are validated by engram, not by a schema the model guesses
  *   around,
  * - `/goal` for a human.
@@ -19,7 +22,9 @@
  * The output is **plain JavaScript-valid TypeScript**: no annotations, no imports beyond
  * `node:child_process`. That is deliberate — it means the emitted string can be syntax-checked with
  * `node --check`, which `test/goal-extension.test.ts` does, so a broken generated file cannot reach
- * a user's repository.
+ * a user's repository. The absence of `node:fs` is deliberate too: whether an artifact exists or a pid
+ * is gone is the engine's judgment, taken by `engram goal event --type poll`, so the host holds a
+ * clock rather than a second copy of that rule.
  *
  * Opt-in: `sync` only writes this when `.engram/config.json` says `goal.enabled` is true.
  */
@@ -41,7 +46,9 @@ export function goalExtensionSource(ctx: GoalExtensionContext): string {
 //
 // This file holds no goal rules. It maps pi lifecycle events onto \'engram goal event --json\' and
 // applies the answer. Every decision (what continues, what waits, what counts as done) lives in
-// engram's core, so there is exactly one implementation and this file cannot drift from it.
+// engram's core, so there is exactly one implementation and this file cannot drift from it. The one
+// thing it owns beyond plumbing is the clock: a timer (L2), because the engine has no process of its
+// own while pi is idle. It never decides whether a wake is real — it asks.
 //
 // Opt-in: remove "goal" from .engram/config.json and run \'engram sync\' to delete this file.
 
@@ -113,8 +120,19 @@ function identity(ctx) {
 }
 
 function event(type, extra, ctx) {
+  return eventWithSession(type, extra, identity(ctx));
+}
+
+/**
+ * The same call with the emitter's session spelled out.
+ *
+ * A timer has no 'ctx' to read: it fires long after the handler that armed it returned. So the session
+ * is captured at arm time instead, because an event carrying the *wrong* pane's identity is worse than
+ * one carrying none — the engine refuses a wake or a poll from an identified non-holder, which is
+ * exactly what a timer left armed in a pane that handed the baton away would send.
+ */
+function eventWithSession(type, extra, session) {
   const args = ["goal", "event", "--type", type].concat(extra || []);
-  const session = identity(ctx);
   if (session) args.push("--session", session);
   return call(args);
 }
@@ -124,11 +142,207 @@ function notify(pi, text) {
   pi.sendMessage({ customType: "engram-goal", content: text, display: true });
 }
 
+/**
+ * 'notify', for a call made after the handler that armed it returned.
+ *
+ * The runtime can be stale by then (a reload, a session replacement, a shutdown), and 'sendMessage'
+ * throws. From a timer callback an uncaught throw ends the process, so a message is never worth the
+ * session: it is swallowed here, and the state that matters lives in 'goal.json'.
+ */
+function safeNotify(pi, text) {
+  if (!text) return;
+  try {
+    notify(pi, text);
+  } catch (e) {
+    // Nothing else can be said through this runtime.
+  }
+}
+
 let warned = false;
 
 export default function (pi) {
   // Once per threshold crossing; reset when the context drops back below it.
   let reminded = false;
+
+  // ---------------------------------------------------------------- the L2 wake transport
+  //
+  // The engine names the condition, the token, the planned instant and the deadline; this is the only
+  // consumer of 'schedule-wake'. Deliberately not a scheduler: one handle, replaced or cancelled on
+  // every engine answer, and no memory of its own. An in-process timer rather than a systemd unit
+  // because a wait of minutes must cost nothing to set up, and because
+  // 'pi.sendMessage(..., {triggerTurn: true})' starts a real run while pi is idle — that is the whole
+  // transport.
+  //
+  // What this file does *not* do is decide that a wake is real. It holds the clock (the engine has no
+  // process while pi is idle) and asks: 'engram goal event --type poll'. The engine answers with a
+  // message when the wait is over, and with nothing otherwise — so an early question, a duplicate, a
+  // stale token and a goal that moved on all cost one ignored call and start no turn.
+  //
+  // Two constants, and both are corrections to how Node timers actually behave:
+  //
+  // - MAX_TIMER_MS is setTimeout's ceiling. A longer delay is coerced and fires *immediately*, so a
+  //   month-long wait would wake on the spot. A long wait is split into hops instead.
+  // - WAKE_POLL_MS is how often a condition the host cannot watch for a completion event is asked
+  //   about. The question is cheap and the answer is the engine's.
+  const MAX_TIMER_MS = 2147483647;
+  const WAKE_POLL_MS = 15000;
+  // The first look at an observed condition comes sooner than the steady rate: its producer may have
+  // finished before the report that latched the wait, and a second of latency costs one CLI call. It is
+  // still a hop rather than an immediate question, because the answer must not start a turn from inside
+  // the tool call that asked for the wait.
+  const WAKE_FIRST_LOOK_MS = 1000;
+
+  let timer = null;
+  let armedToken = null;
+
+  // Cancel by token, not unconditionally. A replaced wait arrives as [clear-wake old,
+  // schedule-wake new], and an unconditional clear would cancel the new one and park the goal with no
+  // timer at all — a lost notification, built by the code that exists to prevent one.
+  function clearWake(token) {
+    if (token !== undefined && token !== armedToken) return;
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    armedToken = null;
+  }
+
+  function armWake(effect, session) {
+    clearWake();
+    armedToken = effect.token;
+    const condition = effect.condition;
+    const fireAt = effect.fireAt ? Date.parse(effect.fireAt) : NaN;
+    const deadlineAt = effect.deadlineAt ? Date.parse(effect.deadlineAt) : NaN;
+
+    function hop(delay) {
+      const now = Date.now();
+      const bound = Number.isFinite(deadlineAt) ? deadlineAt - now : Number.POSITIVE_INFINITY;
+      timer = setTimeout(tick, Math.max(0, Math.min(delay, bound, MAX_TIMER_MS)));
+    }
+
+    // The question. One call, and the engine decides what it means — and changes nothing: a poll is a
+    // peek, so a message that cannot be delivered has consumed nothing.
+    function ask() {
+      timer = null;
+      // Nothing is armed while the answer is in flight; the ways out below decide what is next.
+      armedToken = null;
+      const res = eventWithSession("poll", ["--token", effect.token], session);
+      if (!res) {
+        warnUnreachable(pi);
+        return;
+      }
+      const ready = Array.isArray(res.effects)
+        ? res.effects.find((e) => e.kind === "wake-ready")
+        : undefined;
+      if (ready) return deliver(ready);
+      safeNotify(pi, res.notify);
+      applyEffects(res, session);
+      // The engine armed something in the answer; that is the authority and this timer is done.
+      if (timer !== null) return;
+      // 'still waiting' is the engine saying the condition has not come true: the state is unchanged, so
+      // ask again. Anything else ends this timer — the wait was released, the goal was blocked or
+      // closed, or the poll was refused because this pane no longer holds the baton, and none of those
+      // is this pane's wait to watch.
+      const waiting =
+        Array.isArray(res.effects) &&
+        res.effects.some((e) => e.kind === "silent" && e.reason === "waiting");
+      if (!waiting) return;
+      armedToken = effect.token;
+      hop(WAKE_POLL_MS);
+    }
+
+    // Delivery, then claim — never the other way round.
+    //
+    // 'pi.sendMessage' throws when the extension runtime is stale (a reload, a session replacement, a
+    // shutdown in progress), and a throw from a timer callback kills the whole process. Measured: a
+    // '--print' session settled, the timer fired, 'sendMessage' threw 'This extension ctx is stale', and
+    // node died with an uncaught exception. The session was gone — but the same throw can happen while
+    // the runtime is only *replaced*, and there the ordering is what decides whether the goal survives:
+    // consuming first would release the latch for a message nobody ever saw, leaving a 'running' goal
+    // that nothing was watching.
+    function deliver(ready) {
+      try {
+        pi.sendMessage(
+          { customType: "engram-goal", content: ready.message, display: true },
+          { triggerTurn: true },
+        );
+      } catch (e) {
+        // Nothing was delivered, so nothing is claimed: the wait stays latched, so the next
+        // 'session_start' reconciles and re-arms it, and the liveness deadline still covers it.
+        //
+        // **No retry.** A stale runtime is stale for good — pi's own message says to move
+        // post-replacement work into 'withSession', and this closure can never get a live one back. A
+        // retry would be a hop that always fails, and because a pending 'setTimeout' keeps node's event
+        // loop alive it would also hold a *shutting-down* process open for as long as the deadline.
+        // Measured: a '--print' session with a 24h wait would have spun a spawn per second for a day.
+        safeNotify(pi, "engram-goal: the wake could not be delivered, so the wait is still latched.");
+        return;
+      }
+      // Delivered. The claim is what releases the latch, and it carries this pane's identity so a pane
+      // that lost the baton while the turn was being started cannot release someone else's wait.
+      const claimed = eventWithSession("wake", ["--token", ready.token, "--reason", ready.reason], session);
+      if (!claimed) warnUnreachable(pi);
+      else applyEffects(claimed, session);
+    }
+
+    // One hop. The wait is re-planned on each one because the planned instant is not necessarily
+    // within setTimeout's ceiling and the deadline is not the planned instant.
+    function tick() {
+      // A cancelled handle cannot be trusted to stay cancelled: 'clearTimeout' does not stop a callback
+      // that is already queued. The token is the authority, so it is re-checked on every hop.
+      if (armedToken !== effect.token) return;
+      const now = Date.now();
+      if (Number.isFinite(deadlineAt) && now >= deadlineAt) {
+        // The liveness bound is reached. Whether that escalates or re-arms the wait is the engine's
+        // call — 'reconcile' owns it — so ask instead of deciding.
+        timer = null;
+        armedToken = null;
+        const res = eventWithSession("reconcile", [], session);
+        if (!res) {
+          warnUnreachable(pi);
+          return;
+        }
+        safeNotify(pi, res.notify);
+        applyEffects(res, session);
+        return;
+      }
+      if (condition.kind === "time") {
+        // A clock the host can plan, and the only condition it knows without asking.
+        const planned = Number.isFinite(fireAt) ? fireAt : now + condition.seconds * 1000;
+        if (planned - now <= 0) return ask();
+        return hop(planned - now);
+      }
+      // A process or an artifact has no completion event this process can subscribe to, so the only
+      // way to learn is to ask — and 'ask' re-arms itself for as long as the engine says the goal is
+      // still waiting. The deadline hop above bounds the asking.
+      return ask();
+    }
+
+    // Arming is not asking. A 'process' or an 'artifact' wait was latched by the report that armed this
+    // timer, so a question asked right now would be a round trip whose answer is already known — and it
+    // would be asked *inside the tool call that armed it*, which is exactly where 'triggerTurn' must not
+    // fire (the agent is mid-turn, not idle). A 'time' wait has no such round trip: 'tick' either hops to
+    // its plan or, when the plan is already past, asks immediately, which is the honest answer after a
+    // restart.
+    if (condition.kind === "time") tick();
+    else hop(WAKE_FIRST_LOOK_MS);
+  }
+
+  /**
+   * Apply the engine's effect list.
+   *
+   * Only the timer pair is the host's to own. 'nudge' is applied by the caller (it is the
+   * continuation), 'handoff' by the tool that asked for it, and 'escalate' / 'silent' /
+   * 'done-observed' are for a human to read.
+   *
+   * Called after *every* engine answer rather than at the interesting ones: a wake is cancelled by a
+   * run start, re-armed by a reconcile and scheduled by a report, so no single call site sees them all.
+   */
+  function applyEffects(res, session) {
+    if (!res || !Array.isArray(res.effects)) return;
+    for (const effect of res.effects) {
+      if (effect.kind === "clear-wake") clearWake(effect.token);
+      else if (effect.kind === "schedule-wake") armWake(effect, session);
+    }
+  }
 
   // A new run releases the wait latch inside engram. Doing this on agent_start (not before_settle)
   // is what makes "any new run resumes the loop" true, including a background-task completion and a
@@ -137,13 +351,17 @@ export default function (pi) {
     const res = event("run-started", [], ctx);
     warnUnreachable(pi);
     notify(pi, res && res.notify);
+    applyEffects(res, identity(ctx));
   });
 
-  // A wait that survived a pi restart is re-armed here, or escalated if its deadline passed.
+  // A wait that survived a pi restart is re-armed here, or escalated if its deadline passed. This is
+  // also what arms the *successor's* timer after a handoff during a wait: its session starts, so it
+  // reconciles from the same goal.json the predecessor is still waiting on.
   pi.on("session_start", (_event, ctx) => {
     const res = event("reconcile", [], ctx);
     warnUnreachable(pi);
     notify(pi, res && res.notify);
+    applyEffects(res, identity(ctx));
   });
 
   // The continuation guard. pi allows exactly one continuation per settlement; engram decides
@@ -153,8 +371,10 @@ export default function (pi) {
     warnUnreachable(pi);
     if (!res || !res.continue || !res.message) {
       notify(pi, res && res.notify);
+      applyEffects(res, identity(ctx));
       return undefined;
     }
+    applyEffects(res, identity(ctx));
     return {
       continue: true,
       entries: [
@@ -188,6 +408,7 @@ export default function (pi) {
         // it had already succeeded.
         const res = event("wake", ["--reason", reason], ctx);
         ctx.ui.notify(res ? res.notify || res.reason || "goal woken" : "engram goal wake failed", "info");
+        applyEffects(res, identity(ctx));
         return;
       }
       const res = event("status", [], ctx);
@@ -240,6 +461,9 @@ export default function (pi) {
         // failure makes it guess.
         return { content: [{ type: "text", text: res.reason || "invalid goal report" }], details: undefined, isError: true };
       }
+      // A report is where a wait is armed, so the effects must be applied here and not only in the
+      // lifecycle hooks: nothing else in this file ever sees a 'schedule-wake'.
+      applyEffects(res, identity(ctx));
       const parts = ["goal " + (res.goalId || "") + ": " + (res.status || "?")];
       if (res.reason) parts.push(res.reason);
       if (res.notify) parts.push(res.notify);

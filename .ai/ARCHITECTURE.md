@@ -49,7 +49,7 @@ user's code. The tool writes Markdown and reads Markdown.
 | `src/adapters/rules.ts` | renders rule files and refreshes contract blocks | `templates/contract.ts` |
 | `src/adapters/skills.ts` | materialises canonical skills into Pi's two carriers | `templates/skills.ts` |
 | `src/commands/prune-carriers.ts` | deletes generated carriers whose canonical skill is gone, and retired sink dirs | `core/project.ts`, templates |
-| `src/commands/goal.ts` | the `engram goal …` verbs: new / status / list / check / wake / baton / close / event | `core/goal*`, `templates/goal-files.ts` |
+| `src/commands/goal.ts` | the `engram goal …` verbs: new / status / list / check / wake / baton / close / event / unit / handoff, plus the one place a wake condition is *observed* (fs + `process.kill`) | `core/goal*`, `templates/goal-files.ts` |
 | `src/commands/goal-carrier.ts` | materialises (or removes) the opt-in `.pi/extensions/engram-goal.ts` | `core/project.ts`, `templates/goal-extension.ts` |
 | `src/templates/goal-files.ts` | `BRIEF.md` and `TASKS.md` shapes for `.ai/goal/<id>/` | nothing |
 | `src/templates/goal-extension.ts` | the generated pi extension, as JS-valid TypeScript source | nothing |
@@ -88,12 +88,18 @@ pi extension (.pi/extensions/engram-goal.ts — generated, holds NO rules)
      ▼
 commands/goal.ts  runGoalEvent  ──► core/goal-host.ts (parse args)
      │                                  │
-     │   reduce + evaluate in ONE round trip
+     │   reduce + evaluate in ONE round trip, and `poll` observed on the way in
      ▼                                  ▼
 core/goal-store.ts ──► .ai/goal/<id>/goal.json    core/goal-eval.ts ──► BRIEF.md / metric / cmd
      │
      └──► GoalResponse { continue, message, notify, status } ──► agent_before_settle
 ```
+
+Waiting adds one loop to that picture, and no new rule anywhere: `schedule-wake` publishes an
+absolute `fireAt`, the extension arms a `setTimeout` for it, and at that instant the extension *asks*
+`engram goal event --type poll`. The engine answers, and only the engine's message starts a run
+(`pi.sendMessage(…, { triggerTurn: true })`). So the host holds a clock and nothing else — it does not
+know whether a pid is gone or an artifact exists, and it never runs a gate.
 
 The extension is a **marshaller, not a fork**. It cannot import `build/` (it runs under pi's loader
 inside the user's repository), so the alternative would be shipping a second copy of the engine —
@@ -160,9 +166,12 @@ what makes the whole pipeline testable in memory.
     **Enforced:** `test/goal.test.ts`.
 11. **The generated pi extension holds no rule.** It maps lifecycle events onto
     `engram goal event --json` and applies the answer; `evaluate` is resolved inside the CLI, so the
-    host never runs a gate. It is emitted as JS-valid TypeScript and `node --check`ed on every test
+    host never runs a gate, and a wake condition is observed by the CLI, so the host never inspects
+    the machine. The only thing it owns is the **clock** — a `setTimeout`, because the engine has no
+    process while pi is idle. It is emitted as JS-valid TypeScript and `node --check`ed on every test
     run, because a syntax error there fails inside pi's loader, far from the file engram wrote.
-    **Enforced:** `test/goal-extension.test.ts`.
+    **Enforced:** `test/goal-extension.test.ts` (source assertions *and* the emitted module loaded
+    against a stub `pi` with a real CLI, which is the only way to prove a timer fires).
 12. **The goal engine is opt-in, and only the pi carrier can enable it.** `.engram/config.json`
     carries `goal.enabled`; `sync` writes `.pi/extensions/engram-goal.ts` only when it is true *and*
     it is the only client. Turning it off removes a **generated** file and never a hand-written one.

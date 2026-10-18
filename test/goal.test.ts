@@ -312,7 +312,10 @@ test('reconcile re-arms a live wait and escalates an expired one', () => {
 
   const dead = send(armed, { kind: 'reconcile', now: hours(25) });
   assert.equal(dead.view.record.status, 'blocked');
-  assert.equal(dead.effects[0]?.kind === 'escalate' && dead.effects[0].severity, 'stuck');
+  // The timer is cancelled *before* the escalation: an expired wait that only escalates leaves the
+  // host armed for a token the record has already dropped.
+  assert.deepEqual(kinds(dead.effects), ['clear-wake', 'escalate', 'silent']);
+  assert.equal(dead.effects[1]?.kind === 'escalate' && dead.effects[1].severity, 'stuck');
 });
 
 test('a second wait cancels the first timer', () => {
@@ -320,6 +323,122 @@ test('a second wait cancels the first timer', () => {
   const second = send(first, { kind: 'report', now: hours(1), report: { status: 'wait', wakeOn: { kind: 'process', pid: 2 } } });
   assert.deepEqual(second.effects[0], { kind: 'clear-wake', token: 'wake-1' });
   assert.equal(second.view.record.wake?.token, 'wake-2');
+});
+
+test('a wait publishes an absolute plan, and a restart keeps the remainder', () => {
+  const armed = send(view(), { kind: 'report', now: T0, report: { status: 'wait', wakeOn: { kind: 'time', seconds: 3600 } } });
+  const scheduled = armed.effects[0];
+  assert.equal(scheduled?.kind, 'schedule-wake');
+  assert.equal(
+    scheduled?.kind === 'schedule-wake' ? scheduled.fireAt : null,
+    hours(1),
+    'a time wait names the instant its condition comes true, which is not its deadline',
+  );
+  assert.equal(armed.view.record.wake?.deadlineAt, hours(24), 'the deadline is still the liveness bound');
+
+  // Two hours later the wait is re-armed — and the plan is the *same* instant, now in the past, so the
+  // host asks immediately instead of waiting a second full hour. A fire time computed from the new
+  // `now` would turn a 6-hour wait that survived a restart into twelve.
+  const live = send(armed.view, { kind: 'reconcile', now: hours(2) });
+  const rearmed = live.effects[0];
+  assert.equal(rearmed?.kind === 'schedule-wake' ? rearmed.fireAt : null, hours(1));
+
+  // A process or an artifact has no plan to publish: the host polls, so there is nothing to name.
+  const observed = send(view(), { kind: 'report', now: T0, report: { status: 'wait', wakeOn: { kind: 'artifact', path: 'out/x.json' } } });
+  const effect = observed.effects[0];
+  assert.equal(effect?.kind === 'schedule-wake' ? effect.fireAt : 'missing', null);
+});
+
+test('a report that releases a wait cancels its timer', () => {
+  // `onProgress` was the one branch that set `wake: null` without emitting `clear-wake`, so the host's
+  // timer stayed armed for a token the record no longer held.
+  const armed = send(view(), { kind: 'report', now: T0, report: { status: 'wait', wakeOn: { kind: 'process', pid: 1 } } }).view;
+  const r = send(armed, { kind: 'report', now: hours(1), report: { status: 'progress' } });
+  assert.equal(r.view.record.wake, null);
+  assert.deepEqual(kinds(r.effects), ['clear-wake', 'nudge']);
+
+  // The unclassified path releases the same latch and must cancel it too.
+  const bare = send(view(record(), brief(null)), { kind: 'report', now: T0, report: { status: 'wait', wakeOn: { kind: 'time', seconds: 60 } } }).view;
+  const classified = send(bare, { kind: 'report', now: hours(1), report: { status: 'progress' } });
+  assert.deepEqual(kinds(classified.effects), ['clear-wake', 'nudge']);
+  assert.equal(nudgeReason(classified.effects), 'classify');
+});
+
+test('a poll is a question the engine answers, not a claim it accepts', () => {
+  const armed = send(view(), { kind: 'report', now: T0, report: { status: 'wait', wakeOn: { kind: 'time', seconds: 3600 } } }).view;
+
+  // Early: the host asked, the engine's own clock says not yet, and the answer says "still waiting" —
+  // which is what tells the host to ask again. The record does not move.
+  const early = send(armed, { kind: 'poll', now: hours(0.5), token: 'wake-1', observed: false });
+  assert.deepEqual(early.effects, [{ kind: 'silent', reason: 'waiting' }]);
+  assert.equal(early.view.record.status, 'waiting');
+
+  // Due: the answer carries the message to deliver — and **nothing has moved**. A question must not
+  // consume its own answer: if the host cannot deliver the message (a stale runtime), it has consumed
+  // nothing and the wait is still there for the next reconcile or retry to wake.
+  const due = send(armed, { kind: 'poll', now: hours(1), token: 'wake-1', observed: false });
+  assert.equal(due.view.record.status, 'waiting', 'a peek is not a wake');
+  assert.equal(due.view.record.wake?.token, 'wake-1', 'and the token is still latched');
+  assert.deepEqual(kinds(due.effects), ['wake-ready']);
+  const ready = due.effects[0] as Extract<GoalEffect, { kind: 'wake-ready' }>;
+  assert.equal(ready.token, 'wake-1');
+  assert.equal(ready.reason, '3600s elapsed');
+  assert.match(ready.message, /3600s elapsed/);
+
+  // The claim is what releases it, and it is a separate call.
+  const claimed = send(due.view, { kind: 'wake', now: hours(1), token: 'wake-1', reason: ready.reason });
+  assert.equal(claimed.view.record.status, 'running');
+  assert.equal(claimed.view.record.wake, null);
+  assert.deepEqual(kinds(claimed.effects), ['clear-wake', 'nudge']);
+  assert.equal(
+    (claimed.effects[1] as Extract<GoalEffect, { kind: 'nudge' }>).message,
+    ready.message,
+    'one builder for both sides of the delivery, or a model reads whichever path ran',
+  );
+
+  // A peek for a wait the engine has already released answers nothing to deliver.
+  assert.deepEqual(send(claimed.view, { kind: 'poll', now: hours(2), token: 'wake-1', observed: false }).effects, []);
+});
+
+test('an observed condition wakes on what the CLI saw, and a stale token stays silent', () => {
+  const armed = send(view(), { kind: 'report', now: T0, report: { status: 'wait', wakeOn: { kind: 'process', pid: 4242 } } }).view;
+  assert.deepEqual(
+    kinds(send(armed, { kind: 'poll', now: hours(1), token: 'wake-1', observed: false }).effects),
+    ['silent'],
+    'a pid that is still there is not a wake',
+  );
+  const gone = send(armed, { kind: 'poll', now: hours(1), token: 'wake-1', observed: true });
+  assert.deepEqual(kinds(gone.effects), ['wake-ready']);
+  assert.match((gone.effects[0] as Extract<GoalEffect, { kind: 'wake-ready' }>).message, /pid 4242 exited/);
+
+  const artifact = send(view(), { kind: 'report', now: T0, report: { status: 'wait', wakeOn: { kind: 'artifact', path: 'out/x.json' } } }).view;
+  const appeared = send(artifact, { kind: 'poll', now: hours(1), token: 'wake-1', observed: true });
+  assert.match((appeared.effects[0] as Extract<GoalEffect, { kind: 'wake-ready' }>).message, /out\/x\.json appeared/);
+
+  // A poll for a token the goal no longer holds is empty, not "still waiting": the host must stop
+  // asking rather than poll a released wait forever.
+  assert.deepEqual(send(armed, { kind: 'poll', now: hours(1), token: 'wake-9', observed: true }).effects, []);
+  assert.equal(send(armed, { kind: 'poll', now: hours(1), token: 'wake-9', observed: true }).view.record.status, 'waiting');
+});
+
+test('a timer that survived a handoff cannot consume the wake the successor is watching', () => {
+  // The predecessor's timer is still armed in a pane that handed the baton away. If its poll were
+  // accepted, it would consume the token, release the latch, and leave a `running` goal with nobody
+  // driving it — the successor would never be nudged and `waiting` is the only state with a deadline.
+  const armed = send(view(), { kind: 'report', now: T0, report: { status: 'wait', wakeOn: { kind: 'process', pid: 1 } } }).view;
+  const stale = reduce(armed, { kind: 'poll', now: hours(1), token: 'wake-1', observed: true, sessionPath: '/sessions/two.jsonl' });
+  assert.equal(stale.effects[0]?.kind, 'ignore');
+  assert.equal(stale.record.status, 'waiting', 'the wait is untouched');
+
+  const staleWake = reduce(armed, { kind: 'wake', now: hours(1), token: 'wake-1', reason: 'x', sessionPath: '/sessions/two.jsonl' });
+  assert.equal(staleWake.effects[0]?.kind, 'ignore');
+
+  // Second, an *unidentified* emitter is legitimate: a systemd unit's ExecStopPost, herdr's delivery
+  // and a human typing `goal wake` all arrive without a session, and refusing them would delete L3 and
+  // the escape hatch together.
+  const stranger = reduce(armed, { kind: 'wake', now: hours(1), token: 'wake-1', reason: 'unit exited' });
+  assert.equal(stranger.effects[0]?.kind, 'clear-wake');
+  assert.equal(stranger.record.status, 'running');
 });
 
 test('only the baton holder may drive the goal', () => {

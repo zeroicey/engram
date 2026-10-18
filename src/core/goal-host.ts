@@ -166,6 +166,11 @@ export function responseFromEffects(
   const escalate = effects.find((e) => e.kind === 'escalate');
   const handoff = effects.find((e) => e.kind === 'handoff');
   const done = effects.find((e) => e.kind === 'done-observed');
+  // An `ignore` is the only effect that says *why nothing happened*, and it used to be invisible:
+  // the response carried `effects: [{kind:'ignore'}]` and a `reason` of `null`, so `/goal` printed
+  // "goal woken" for a wake the goal had refused. A host that cannot read the refusal cannot report
+  // it, and a silent refusal is the failure mode this whole file exists to avoid.
+  const ignore = effects.find((e) => e.kind === 'ignore');
 
   return {
     ok: true,
@@ -176,7 +181,15 @@ export function responseFromEffects(
     goalId: record.id,
     // `handoff` is a request the extension has to act on, so it needs to be distinguishable from
     // "nothing to do" even when nothing is continued.
-    reason: reason ?? (handoff !== undefined ? 'handoff requested' : done !== undefined ? 'done observed' : null),
+    reason:
+      reason ??
+      (ignore?.kind === 'ignore'
+        ? ignore.reason
+        : handoff !== undefined
+          ? 'handoff requested'
+          : done !== undefined
+            ? 'done observed'
+            : null),
     effects,
   };
 }

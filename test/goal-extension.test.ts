@@ -445,3 +445,226 @@ test('every lifecycle call carries the session identity, so the baton rule can b
   }
   assert.match(src, /args\.push\("--session", session\)/, 'the tool identifies itself too');
 });
+
+// ---------------------------------------------------------------- the L2 timer, live
+
+/**
+ * The generated extension, loaded against a stub `pi` and a **real** CLI in a real project.
+ *
+ * The string assertions above pass whether or not the timer works, and a timer is the one part of
+ * this file that cannot be proved by reading it: whether `schedule-wake` becomes a live handle, whether
+ * a release really cancels it, and whether a satisfied wake starts a turn are all runtime facts. So
+ * the emitted module is imported and driven, with `engram` reached through a shim that `cd`s into the
+ * sandbox — which is also how an installed bin behaves.
+ */
+async function loadExtension(
+  sb: Awaited<ReturnType<typeof sandbox>>,
+  session: string,
+  options: { throwOnFirstDelivery?: boolean } = {},
+): Promise<{
+  handlers: Map<string, (event?: unknown, ctx?: unknown) => unknown>;
+  messages: { content: string; triggerTurn: boolean }[];
+  report: (params: Record<string, unknown>) => Promise<unknown>;
+  ctx: Record<string, unknown>;
+}> {
+  const cli = new URL('../src/cli.js', import.meta.url).pathname;
+  const shim = await sb.write('.engram/test-engram', `#!/bin/sh\ncd ${sb.root} || exit 1\nexec node ${cli} "$@"\n`);
+  await fs.chmod(shim, 0o755);
+
+  const src = goalExtensionSource({ engramBin: shim, version: '0.5.0' });
+  const file = path.join(os.tmpdir(), `engram-goal-timer-${process.pid}-${path.basename(sb.root)}.mjs`);
+  await fs.writeFile(file, src);
+  delete process.env.ENGRAM_BIN;
+  const mod = (await import(`file://${file}`)) as { default: (pi: unknown) => void };
+  await fs.rm(file, { force: true });
+
+  const handlers = new Map<string, (event?: unknown, ctx?: unknown) => unknown>();
+  const messages: { content: string; triggerTurn: boolean }[] = [];
+  let tool: { execute: (id: string, params: Record<string, unknown>, s: unknown, u: unknown, ctx: unknown) => Promise<unknown> } | null = null;
+  const ctx = {
+    sessionManager: { getSessionFile: () => session },
+    ui: { notify: () => {} },
+    getContextUsage: () => undefined,
+  };
+  mod.default({
+    on(hook: string, fn: (event?: unknown, ctx?: unknown) => unknown) {
+      handlers.set(hook, fn);
+    },
+    registerCommand() {},
+    registerTool(def: typeof tool) {
+      tool = def;
+    },
+    sendMessage(msg: { content: string }, callOptions?: { triggerTurn?: boolean }) {
+      messages.push({ content: msg.content, triggerTurn: callOptions?.triggerTurn === true });
+      // The runtime a timer fires into can be stale (a reload, a session replacement, a shutdown) and
+      // `sendMessage` throws. A throw from a timer callback is an uncaught exception in *this* process
+      // too, so the test would fail loudly — which is the point.
+      if (options.throwOnFirstDelivery === true && callOptions?.triggerTurn === true) {
+        options.throwOnFirstDelivery = false;
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      }
+    },
+  });
+  assert.ok(tool !== null, 'the tool must be registered');
+  return {
+    handlers,
+    messages,
+    ctx,
+    report: (params: Record<string, unknown>) => (tool as NonNullable<typeof tool>).execute('id', params, undefined, undefined, ctx),
+  };
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+test('a wait of a second really fires: the timer asks the engine and starts a turn', async () => {
+  const sb = await sandbox('engram-goal-timer-');
+  try {
+    await seedBank(sb);
+    await run(['goal', 'new', 'timer proof', '--cmd', 'true', '--root', sb.root]);
+    const ext = await loadExtension(sb, '/sessions/timer.jsonl');
+
+    await ext.report({ status: 'wait', wakeOnType: 'time', wakeOnSeconds: 1 });
+    const armed = await sb.read(`.ai/goal/${(await sb.list('.ai/goal'))[0] ?? ''}/goal.json`);
+    assert.equal((JSON.parse(armed) as { status: string }).status, 'waiting', 'the report parked the goal');
+    assert.equal(ext.messages.length, 0, 'and nothing has been said yet');
+
+    await sleep(1400);
+    const fired = ext.messages.filter((m) => m.triggerTurn);
+    assert.equal(fired.length, 1, 'exactly one turn, started by the timer');
+    assert.match(fired[0]?.content ?? '', /1s elapsed/, 'the message names what ended');
+    assert.match(fired[0]?.content ?? '', /done_when/, 'and asks for a judgment');
+
+    const after = JSON.parse(await sb.read(`.ai/goal/${(await sb.list('.ai/goal'))[0] ?? ''}/goal.json`)) as { status: string; wake: unknown };
+    assert.equal(after.status, 'running', 'the engine released the wait, and it was the engine');
+    assert.equal(after.wake, null, 'the consumed timer is cleared, not left handled');
+  } finally {
+    await sb.cleanup();
+  }
+});
+
+test('a released wait cancels the timer, so no turn arrives for a wait that is over', async () => {
+  const sb = await sandbox('engram-goal-timer-cancel-');
+  try {
+    await seedBank(sb);
+    await run(['goal', 'new', 'timer cancel', '--cmd', 'true', '--root', sb.root]);
+    const ext = await loadExtension(sb, '/sessions/timer.jsonl');
+
+    await ext.report({ status: 'wait', wakeOnType: 'time', wakeOnSeconds: 1 });
+    // Any new run releases the latch — here `agent_start`, which is what a background-task completion
+    // or a herdr prompt looks like. The engine answers with `clear-wake`, and that is what must stop
+    // the handle: a timer left armed for a released token asks the engine about a wait it no longer
+    // has, and a spurious turn is the cheapest possible outcome.
+    ext.handlers.get('agent_start')?.({}, ext.ctx);
+    await sleep(1400);
+    assert.deepEqual(
+      ext.messages.filter((m) => m.triggerTurn),
+      [],
+      'the timer fired after the goal had already moved on',
+    );
+  } finally {
+    await sb.cleanup();
+  }
+});
+
+test('a restart re-arms the wait from the record, not from the report', async () => {
+  const sb = await sandbox('engram-goal-timer-reconcile-');
+  try {
+    await seedBank(sb);
+    await run(['goal', 'new', 'timer restart', '--cmd', 'true', '--root', sb.root]);
+    // The wait is latched by a *different process* — the predecessor that has since restarted, or the
+    // pane that handed the baton away. So this extension has never seen a `schedule-wake`, and the only
+    // thing that can give it a timer is the reconcile on session start. Without that, a wait exists
+    // only in the process that latched it, and a handoff parks the goal in a pane nobody is watching.
+    await run(['goal', 'event', '--type', 'report', '--report', '{"status":"wait","wakeOnType":"time","wakeOnSeconds":1}', '--root', sb.root]);
+    const ext = await loadExtension(sb, '/sessions/successor.jsonl');
+    assert.equal(ext.messages.length, 0, 'nothing armed yet');
+
+    ext.handlers.get('session_start')?.({}, ext.ctx);
+    await sleep(1400);
+    const fired = ext.messages.filter((m) => m.triggerTurn);
+    assert.equal(fired.length, 1, 'the wait recovered from goal.json alone, and fired once');
+    assert.match(fired[0]?.content ?? '', /1s elapsed/);
+  } finally {
+    await sb.cleanup();
+  }
+});
+
+test('an observed condition is polled, and only the engine can turn it into a turn', async () => {
+  const sb = await sandbox('engram-goal-timer-artifact-');
+  try {
+    await seedBank(sb);
+    await run(['goal', 'new', 'wait for the artifact', '--cmd', 'true', '--root', sb.root]);
+    const ext = await loadExtension(sb, '/sessions/timer.jsonl');
+    const id = (await sb.list('.ai/goal'))[0] ?? '';
+    const record = async (): Promise<{ status: string }> =>
+      JSON.parse(await sb.read(`.ai/goal/${id}/goal.json`)) as { status: string };
+
+    // The artifact is not there. The host asks — that is the only in-process way to know — and the
+    // engine answers "still waiting", which the host reads as "ask again". Nothing starts a turn, which
+    // is the property that matters: an unanswered poll is not a wake.
+    await ext.report({ status: 'wait', wakeOnType: 'artifact', wakeOnPath: 'out/ready.json' });
+    await sleep(1400);
+    assert.equal(ext.messages.length, 0, 'a poll that is not satisfied must start nothing');
+    assert.equal((await record()).status, 'waiting');
+
+    // Now it exists. The same question gets the opposite answer, and this time the engine's message is
+    // what starts the turn.
+    await sb.write('out/ready.json', '{"ok":true}\n');
+    ext.handlers.get('session_start')?.({}, ext.ctx);
+    await sleep(1400);
+    const fired = ext.messages.filter((m) => m.triggerTurn);
+    assert.equal(fired.length, 1, 'the observed condition woke the goal');
+    assert.match(fired[0]?.content ?? '', /out\/ready\.json appeared/);
+    assert.equal((await record()).status, 'running');
+  } finally {
+    await sb.cleanup();
+  }
+});
+
+test('a wake that cannot be delivered is not claimed, and the next session recovers it', async () => {
+  const sb = await sandbox('engram-goal-timer-stale-');
+  try {
+    await seedBank(sb);
+    await run(['goal', 'new', 'stale runtime', '--cmd', 'true', '--root', sb.root]);
+    const ext = await loadExtension(sb, '/sessions/timer.jsonl', { throwOnFirstDelivery: true });
+    const id = (await sb.list('.ai/goal'))[0] ?? '';
+    const status = async (): Promise<{ status: string; wake: unknown }> =>
+      JSON.parse(await sb.read(`.ai/goal/${id}/goal.json`)) as { status: string; wake: unknown };
+
+    await ext.report({ status: 'wait', wakeOnType: 'time', wakeOnSeconds: 1 });
+
+    // The timer fires, the engine answers `wake-ready`, and the delivery throws (a stale runtime — a
+    // reload or a session replacement). Because the poll was a *peek*, the latch is untouched: this is
+    // the assertion that separates delivery-then-claim from a version that consumed first and left a
+    // `running` goal nobody was watching.
+    await sleep(1400);
+    const after = await status();
+    assert.equal(after.status, 'waiting', 'a delivery that failed must not have consumed the wait');
+    assert.notEqual(after.wake, null, 'and the token is still latched');
+    assert.ok(
+      ext.messages.some((m) => /could not be delivered/.test(m.content)),
+      'and the host said so instead of dying silently',
+    );
+
+    // No retry: a stale runtime never comes back, and a pending timer would hold a shutting-down
+    // process open until the deadline. One attempt, then it stops.
+    await sleep(1500);
+    assert.equal((await status()).status, 'waiting');
+    assert.equal(
+      ext.messages.filter((m) => m.triggerTurn).length,
+      1,
+      'the dead runtime must not be retried: a hop that can only fail also keeps the process alive',
+    );
+
+    // The recovery is the real one: a fresh instance reconciles from `goal.json`, re-arms, delivers,
+    // and only then claims.
+    const fresh = await loadExtension(sb, '/sessions/timer.jsonl');
+    fresh.handlers.get('session_start')?.({}, fresh.ctx);
+    await sleep(1400);
+    assert.equal((await status()).status, 'running');
+    assert.equal((await status()).wake, null);
+    assert.equal(fresh.messages.filter((m) => m.triggerTurn).length, 1);
+  } finally {
+    await sb.cleanup();
+  }
+});

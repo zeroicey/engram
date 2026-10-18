@@ -242,3 +242,90 @@ test('the goal verbs appear in --help', async () => {
   assert.match(r.out, /engram goal <verb>/);
   assert.match(r.out, /A goal is judged, not asserted/);
 });
+
+test('goal event --type poll answers whether the wait is over, and reads the machine itself', async () => {
+  const sb = await bank();
+  try {
+    await run(['goal', 'new', 'wait for the artifact', '--cmd', 'true', '--root', sb.root]);
+
+    // `time`: the engine's own clock, so an early poll is not a wake. The host gets `silent: waiting`
+    // — the answer that means "ask again" — and the record does not move.
+    await run(['goal', 'event', '--type', 'report', '--report', '{"status":"wait","wakeOnType":"time","wakeOnSeconds":3600}', '--root', sb.root]);
+    const early = await run(['goal', 'event', '--type', 'poll', '--root', sb.root]);
+    const parsedEarly = JSON.parse(early.out.trim()) as { continue: boolean; status: string; effects: { kind: string; reason?: string }[] };
+    assert.equal(parsedEarly.continue, false);
+    assert.equal(parsedEarly.status, 'waiting');
+    assert.deepEqual(parsedEarly.effects, [{ kind: 'silent', reason: 'waiting' }]);
+
+    // An artifact wait is the CLI's to look at: the file is absent, so the same "still waiting" answer,
+    // and once it exists the wait is released with a message naming what appeared.
+    await run(['goal', 'event', '--type', 'report', '--report', '{"status":"wait","wakeOnType":"artifact","wakeOnPath":"out/metric.json"}', '--root', sb.root]);
+    const absent = JSON.parse((await run(['goal', 'event', '--type', 'poll', '--root', sb.root])).out.trim()) as { status: string };
+    assert.equal(absent.status, 'waiting');
+
+    await sb.write('out/metric.json', '{"mAP":0.9}\n');
+    const appeared = JSON.parse((await run(['goal', 'event', '--type', 'poll', '--root', sb.root])).out.trim()) as {
+      continue: boolean;
+      status: string;
+      effects: { kind: string; message?: string; reason?: string; token?: string }[];
+    };
+    // A peek: the answer carries the message to deliver and moves nothing. The consumption is the
+    // separate claim below, which is what makes a delivery failure recoverable.
+    assert.equal(appeared.continue, false, 'a question does not continue the loop by itself');
+    assert.equal(appeared.status, 'waiting', 'and it does not consume the wait');
+    const ready = appeared.effects.find((e) => e.kind === 'wake-ready');
+    assert.ok(ready, 'the answer carries what to deliver');
+    assert.match(ready?.message ?? '', /out\/metric\.json appeared/);
+
+    // The claim is the host's next call — and it carries the same token and the same reason the engine
+    // built, because the message the model reads must be the engine's account of its own condition.
+    const claimed = JSON.parse(
+      (await run(['goal', 'event', '--type', 'wake', '--token', ready?.token ?? '', '--reason', ready?.reason ?? '', '--root', sb.root])).out.trim(),
+    ) as { continue: boolean; status: string; message: string };
+    assert.equal(claimed.continue, true, 'the model must be told to judge it');
+    assert.equal(claimed.status, 'running');
+    assert.match(claimed.message, /out\/metric\.json appeared/);
+
+    // Consumed once: the same poll again starts nothing, which is what keeps a host that asks twice
+    // from spending a second turn.
+    const again = JSON.parse((await run(['goal', 'event', '--type', 'poll', '--root', sb.root])).out.trim()) as { continue: boolean; reason: string };
+    assert.equal(again.continue, false);
+    assert.match(again.reason, /not waiting/);
+  } finally {
+    await sb.cleanup();
+  }
+});
+
+test('an artifact wait cannot be pointed outside the project', async () => {
+  const sb = await bank();
+  try {
+    await run(['goal', 'new', 'wait on an escape', '--cmd', 'true', '--root', sb.root]);
+    // A path outside the root is the same refusal `done_when.file` and checklist evidence get. Existence
+    // is not the test: this file is real and outside, and the answer is still "not observed".
+    await run(['goal', 'event', '--type', 'report', '--report', '{"status":"wait","wakeOnType":"artifact","wakeOnPath":"/etc/hostname"}', '--root', sb.root]);
+    const r = JSON.parse((await run(['goal', 'event', '--type', 'poll', '--root', sb.root])).out.trim()) as { status: string; effects: { kind: string }[] };
+    assert.equal(r.status, 'waiting');
+    assert.deepEqual(r.effects, [{ kind: 'silent', reason: 'waiting' }]);
+  } finally {
+    await sb.cleanup();
+  }
+});
+
+test('a refused poll names the baton, so a host is not left thinking it woke the goal', async () => {
+  const sb = await bank();
+  try {
+    await run(['goal', 'new', 'owned', '--cmd', 'true', '--session', '/sessions/one.jsonl', '--root', sb.root]);
+    await run([
+      'goal', 'event', '--type', 'report', '--session', '/sessions/one.jsonl',
+      '--report', '{"status":"wait","wakeOnType":"time","wakeOnSeconds":0.001}', '--root', sb.root,
+    ]);
+    const refused = await run(['goal', 'event', '--type', 'poll', '--token', 'wake-1', '--session', '/sessions/two.jsonl', '--root', sb.root]);
+    const parsed = JSON.parse(refused.out.trim()) as { ok: boolean; continue: boolean; status: string; reason: string };
+    assert.equal(parsed.ok, true, 'a refusal is a normal answer, not a failure');
+    assert.equal(parsed.continue, false);
+    assert.equal(parsed.status, 'waiting', 'the wait is untouched');
+    assert.match(parsed.reason, /not the baton holder/);
+  } finally {
+    await sb.cleanup();
+  }
+});
