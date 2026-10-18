@@ -1,15 +1,15 @@
 # .ai/ — project memory bank
 
-Portable, tool-independent memory for AI coding tools. Every supported tool (Claude Code, Codex,
-Pi, Cursor, Windsurf, Copilot, Gemini CLI, OpenCode, …) reads and writes **this same directory**,
-so switching tools never resets context.
+Portable, tool-independent memory for AI coding tools. Pi reads and writes **this directory**, and
+the `.ai/` contract is tool-agnostic: any agent that can read files can follow it, so switching
+tools never resets context.
 
 ## Layer model (how context is loaded)
 
 | Layer | What | Size rule | Loaded when |
 | --- | --- | --- | --- |
 | L0 dynamic injection | `engram dump` fingerprint | ≤ 1.5 KB / 300–500 tokens | every new session, pasted or injected |
-| L1 behaviour contract | `AGENTS.md` / `CLAUDE.md` / `.cursor/rules/*.mdc` … | < 2 KB | always, by the tool |
+| L1 behaviour contract | `AGENTS.md` | < 2 KB | always, by Pi |
 | L2 knowledge bank | this `.ai/` tree | unbounded | on demand, via file reads |
 | L3 action specs | `.ai/skills/*.md` | ~1 KB each | on trigger, via `/handoff`, `/audit`, … |
 

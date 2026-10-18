@@ -1,6 +1,11 @@
 # Support DeepSeek Harness by reusing AGENTS.md and the shared `.agents/skills`
 
-**Status:** ✅ ACCEPTED · **Date:** 2026-10-10 · **Deciders:** lead · **Supersedes:** none
+**Status:** 🪦 SUPERSEDED (the adapter was removed) · **Date:** 2026-10-10 · **Deciders:** lead
+**Superseded by:** `2026-10-18-serve-pi-only.md` (via `2026-10-18-reduce-supported-clients-to-pi-claude-code-and-codex.md`)
+
+> The reasoning below still holds for *how* a shared-carrier client should be supported — reuse
+> `AGENTS.md` and `.agents/skills` rather than adding a second dir that shadows the portable one.
+> What changed is that `dsh` is no longer a supported client, so this decision has no code.
 
 ## Context
 
