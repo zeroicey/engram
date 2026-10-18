@@ -75,6 +75,18 @@ Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templ
 - Network is not needed for anything except `npm install` / `npm publish`.
 - Never rewrite `.ai/` history: decisions are flipped (`💭` → `✅` → `🪦`), not deleted.
 
+## herdr window rules (hard)
+
+One herdr **space is one project** here. Never put several projects in one space, and never place a
+window in another project's space.
+
+- A handoff opens the successor with `herdr tab create --workspace <this space> --no-focus --label …`.
+  **Never `pane split`** — it narrows the human's window on every handoff.
+- The space is resolved by `successorWorkspace` (`src/commands/goal.ts`): `HERDR_WORKSPACE_ID`, then
+  `herdr pane get <pane> → result.pane.workspace_id`, then **refuse**. Never rely on herdr's implicit
+  "focused workspace" — focus is a human's click, not a property of the goal.
+- Do not open a probe window in a space you do not own; close every window you open while testing.
+
 <!-- engram:managed -->
 
 <!-- engram:contract:start v1 -->

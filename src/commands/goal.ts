@@ -25,10 +25,14 @@ import {
 } from '../core/project.js';
 import {
   createdPaneId,
+  createdTabId,
   herdrAgentStartArgs,
   herdrJson,
-  herdrPaneSplitArgs,
+  herdrPaneGetArgs,
+  herdrTabCloseArgs,
+  herdrTabCreateArgs,
   paneForSessionPath,
+  paneWorkspaceId,
   promptPane,
   startedSessionPath,
   type HerdrDeps,
@@ -479,13 +483,23 @@ export async function runGoalBaton(root: string, sessionPath: string, paneId?: s
  *
  * Explicit flags win, and an absent variable stays absent (`undefined`, not `''`): a goal created
  * outside a pane must stay recognisably unclaimed rather than claim a holder named after nothing.
+ *
+ * `workspaceId` is read for a different reason: it is the **container** rule (see
+ * `successorWorkspace`). One herdr workspace is one project, so a successor window must never open in
+ * another one.
  */
-export function identityFromEnv(env: NodeJS.ProcessEnv = process.env): { sessionPath?: string; paneId?: string } {
+export function identityFromEnv(env: NodeJS.ProcessEnv = process.env): {
+  sessionPath?: string;
+  paneId?: string;
+  workspaceId?: string;
+} {
   const sessionPath = env.PI_SESSION_FILE?.trim();
   const paneId = env.HERDR_PANE_ID?.trim();
+  const workspaceId = env.HERDR_WORKSPACE_ID?.trim();
   return {
     ...(sessionPath ? { sessionPath } : {}),
     ...(paneId ? { paneId } : {}),
+    ...(workspaceId ? { workspaceId } : {}),
   };
 }
 
@@ -506,12 +520,79 @@ export interface GoalHandoffOptions {
   reason?: string;
   /** The predecessor's identity, so the reducer can check the baton before the runtime is touched. */
   sessionPath?: string;
-  /** The pane to split beside. Defaults to the baton's pane, then to the successor model below. */
+  /** The pane to open the successor's window beside. Defaults to the baton's pane. */
   paneId?: string;
   /** The successor's pane name, so a human can tell whose handoff it is. */
   name?: string;
   env?: NodeJS.ProcessEnv;
   herdr?: HerdrDeps;
+  /**
+   * Pin the workspace explicitly. Normally unnecessary — `successorWorkspace` reads
+   * `HERDR_WORKSPACE_ID`, then the baton's pane — and it exists so a human can override a mismatch
+   * without editing code.
+   */
+  workspaceId?: string;
+}
+
+/**
+ * Which workspace the successor's window opens in — a fixed rule, not a fallback.
+ *
+ * The project's own convention is **one herdr workspace per project** (a space is a project; it does
+ * not hold several). So a handoff must never open a window anywhere but the workspace of the session
+ * that is handing off, and "where the client happens to be focused" is not an acceptable answer: with
+ * three projects open, a focus-dependent choice lands a successor in whatever space was last clicked.
+ *
+ * Three sources, strongest first, and the disagreement case is deliberate:
+ *
+ * 1. `HERDR_WORKSPACE_ID` — exported by the pane, so it is *this* session's workspace and cannot be
+ *    stale. Preferred because it survives herdr not being readable at all.
+ * 2. `herdr pane get <holder pane>` — the recorded baton's own workspace, read from the runtime. Used
+ *    when the environment does not say (an older herdr, a hand-driven call from outside a pane).
+ * 3. Neither → **refuse**. Not "let herdr pick": `tab create` without `--workspace` targets the
+ *    *focused* workspace, and `--workspace ''` is a hard error, so guessing is the one thing that
+ *    would put a successor in another project's space without anyone noticing.
+ *
+ * When both sources answer and they differ, the environment wins *and the disagreement is reported* — a
+ * mismatch means the baton's pane was recorded in a different space than the one running this command,
+ * which almost always means a goal was created in the wrong window, and silently picking one would bury
+ * that.
+ */
+export function successorWorkspace(input: {
+  env: NodeJS.ProcessEnv;
+  paneWorkspace: string | null;
+}): { workspace: string | null; detail: string } {
+  const fromEnv = input.env.HERDR_WORKSPACE_ID?.trim() || null;
+  const fromPane = input.paneWorkspace;
+
+  if (fromEnv !== null) {
+    if (fromPane !== null && fromPane !== fromEnv) {
+      return {
+        workspace: fromEnv,
+        detail: `this session is in ${fromEnv} but the baton's pane is in ${fromPane}; using ${fromEnv}`,
+      };
+    }
+    return { workspace: fromEnv, detail: `workspace ${fromEnv} (from the pane environment)` };
+  }
+  if (fromPane !== null) {
+    return { workspace: fromPane, detail: `workspace ${fromPane} (from the baton's pane)` };
+  }
+  return {
+    workspace: null,
+    detail: 'cannot tell which herdr workspace this handoff belongs to — HERDR_WORKSPACE_ID is unset and the baton pane could not be read',
+  };
+}
+
+/**
+ * The tab label for a successor window.
+ *
+ * A tab bar reading `2`, `3`, `4` is how a human loses track of which window is which goal, and the
+ * label is the only part of the successor a human sees without reading the transcript. Trimmed rather
+ * than truncated silently: a label that is cut mid-word is still a label, but one the reader has to
+ * finish in their head.
+ */
+export function successorLabel(raw: string): string {
+  const text = raw.replace(/\s+/g, ' ').trim();
+  return text.length <= 40 ? text : `${text.slice(0, 39).trimEnd()}…`;
 }
 
 /**
@@ -560,8 +641,7 @@ export function handoffPrompt(input: { id: string; goal: string; paneId: string;
  * The handoff decision's rule 5 still holds: the model asks for a handoff, and this — a command the
  * model called — is what opens the pane. No lifecycle code decides to spawn.
  */
-export async function runGoalHandoff(opts: GoalHandoffOptions): Promise<GoalCliResult> {
-  const env = opts.env ?? process.env;
+export async function runGoalHandoff(opts: GoalHandoffOptions): Promise<GoalCliResult> {  const env = opts.env ?? process.env;
   const active = opts.id !== undefined ? { id: opts.id, record: (await readGoalRecord(opts.root, opts.id)).record } : await activeGoal(opts.root);
   if (active === null || active.record === null) return fail(['no active goal to hand off']);
   const id = active.id;
@@ -592,25 +672,66 @@ export async function runGoalHandoff(opts: GoalHandoffOptions): Promise<GoalCliR
   const target = opts.paneId ?? active.record.baton?.paneId ?? null;
   const lines: string[] = [`handoff recorded for ${id}`];
 
-  // 2. A pane to inherit the goal.
-  const split = await herdrJson(herdrPaneSplitArgs(target ?? '', opts.root), deps);
-  const pane = split.ok ? createdPaneId(split.json) : null;
-  if (pane === null) {
+  // 2. A window to inherit the goal. A *tab*, not a split: splitting made the human's tab narrower on
+  //    every handoff and put the successor beside a transcript it shares no context with. And always in
+  //    **this project's own workspace** — one space is one project here, so a successor in another space
+  //    would be in another project's window. See `successorWorkspace` for the three sources and why
+  //    "neither" is a refusal rather than a guess.
+  const fromPane = target === null ? null : paneWorkspaceId((await herdrJson(herdrPaneGetArgs(target), deps)).json);
+  const where =
+    opts.workspaceId !== undefined
+      ? { workspace: opts.workspaceId, detail: `workspace ${opts.workspaceId} (pinned by --workspace)` }
+      : successorWorkspace({ env, paneWorkspace: fromPane });
+  if (where.workspace === null) {
     return fail([
       ...lines,
-      `could not open a successor pane: ${split.ok ? `${deps.bin ?? 'herdr'} answered without a pane id` : split.detail}`,
+      `could not place the successor window: ${where.detail}`,
+      '  a successor outside this project\'s space would be in another project; nothing was opened.',
       '  the handoff request stays on the record, so the stale-handoff escalation still applies',
     ]);
   }
-  lines.push(`  pane: ${pane} (split beside ${target ?? 'the current pane'})`);
+  if (fromPane !== null && fromPane !== where.workspace) {
+    lines.push(`  warning: ${where.detail}`);
+  }
+  const label = successorLabel(opts.name ?? `goal-${id.slice(0, 24)}`);
+  const created = await herdrJson(herdrTabCreateArgs(where.workspace, opts.root, label), deps);
+  const pane = created.ok ? createdPaneId(created.json) : null;
+  if (pane === null) {
+    return fail([
+      ...lines,
+      `could not open a successor window: ${created.ok ? `${deps.bin ?? 'herdr'} answered without a pane id` : created.detail}`,
+      '  the handoff request stays on the record, so the stale-handoff escalation still applies',
+    ]);
+  }
+  const tab = createdTabId(created.json);
+  lines.push(`  window: ${tab ?? '(unknown tab)'} — “${label}” in ${where.detail}`, `  pane: ${pane}`);
 
   // 3. The successor, and its identity.
+  //
+  //    A pane whose agent never starts is closed again: leaving it open strands an empty window in the
+  //    human's tab bar for every failed handoff, and the useful information is the *reason*, not the
+  //    window. Measured: a fresh directory makes pi ask "Trust project folder?", herdr then reports no
+  //    session path, and the window stays behind looking like a working successor.
   const name = opts.name ?? `goal-${id.slice(0, 24)}`;
   const start = await herdrJson(herdrAgentStartArgs(name, 'pi', pane, 60_000), deps);
   const successor = start.ok ? startedSessionPath(start.json) : null;
   if (successor === null) {
-    lines.push(`  successor not started: ${start.ok ? 'herdr answered without a session path' : start.detail}`);
-    return { exitCode: 1, lines, warnings: [`the successor pane ${pane} is open but has no agent`] };
+    const why = start.ok ? 'herdr answered without a session path' : start.detail;
+    const closed = tab === null ? null : await herdrJson(herdrTabCloseArgs(tab), deps);
+    lines.push(
+      `  successor not started: ${why}`,
+      closed === null
+        ? `  window ${tab ?? pane} left open: no tab id to close`
+        : closed.ok
+          ? `  window ${tab} closed again`
+          : `  window ${tab} could not be closed: ${closed.detail}`,
+      '  a first run in a directory pi has not trusted stops at "Trust project folder?" and never becomes ready.',
+    );
+    return {
+      exitCode: 1,
+      lines,
+      warnings: [`no successor agent in ${pane} (${why})`],
+    };
   }
   lines.push(`  successor: ${successor}`);
 

@@ -47,27 +47,39 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 
 export const herdrListArgs = (): string[] => ['agent', 'list'];
 
+/** `herdr pane get <id>` — used only to learn which workspace to open the successor's tab in. */
+export const herdrPaneGetArgs = (paneId: string): string[] => ['pane', 'get', paneId];
+
 /** `herdr agent prompt <target> <text>` — argv, never a shell string. */
 export const herdrPromptArgs = (target: string, text: string): string[] => ['agent', 'prompt', target, text];
 
 /**
- * Split `cwd`'s pane beside the pane that holds the baton.
+ * Open a **tab** (a window, in herdr's model) for the successor, in the same workspace as the pane that
+ * holds the baton.
  *
- * The target pane is **named**, never left implicit: without it herdr splits whatever pane the
- * client last focused, which put the successor in a different workspace than the goal it inherits.
- * `--no-focus` keeps the human's cursor where it is — a handoff is not a request to steal the
- * keyboard.
+ * Not `pane split`. A handoff used to split the holder's pane to the right, so every handoff made the
+ * human's tab one column narrower — three handoffs and the session is unusable, and the successor sits
+ * beside a transcript it does not share a context with. A tab is a new window in the same workspace: one
+ * label in the tab bar, its own full width, and the predecessor's tab left exactly as it was.
+ *
+ * `--no-focus` for the same reason the split used it — a handoff is not a request to steal the keyboard.
+ * `--label` names the tab after the goal, because a bar full of "2", "3", "4" is how the human loses
+ * track of which window is which goal.
  */
-export const herdrPaneSplitArgs = (paneId: string, cwd: string): string[] => [
-  'pane',
-  'split',
-  paneId,
-  '--direction',
-  'right',
+export const herdrTabCreateArgs = (workspaceId: string, cwd: string, label: string): string[] => [
+  'tab',
+  'create',
+  '--workspace',
+  workspaceId,
   '--cwd',
   cwd,
+  '--label',
+  label,
   '--no-focus',
 ];
+
+/** `herdr tab close <id>` — undoing a window whose agent never started. */
+export const herdrTabCloseArgs = (tabId: string): string[] => ['tab', 'close', tabId];
 
 /** Start an interactive agent in a pane that is sitting at a shell prompt. */
 export const herdrAgentStartArgs = (name: string, kind: string, paneId: string, timeoutMs: number): string[] => [
@@ -98,8 +110,20 @@ export function stringAt(json: unknown, dotted: string): string | null {
   return typeof cur === 'string' && cur !== '' ? cur : null;
 }
 
-/** The pane a `pane split` created. */
-export const createdPaneId = (json: unknown): string | null => stringAt(json, 'result.pane.pane_id');
+/** The pane a `tab create` made — its root pane, which is what an agent is started in. */
+export const createdPaneId = (json: unknown): string | null => stringAt(json, 'result.root_pane.pane_id');
+
+/** The tab itself, so the handoff report can name the window a human should look for. */
+export const createdTabId = (json: unknown): string | null => stringAt(json, 'result.tab.tab_id');
+
+/**
+ * The workspace a pane belongs to.
+ *
+ * Read from `pane get` rather than assumed, because a goal's pane may be in any workspace and the
+ * successor has to appear *next to* the session that spawned it — not in whatever workspace the client
+ * happened to focus last.
+ */
+export const paneWorkspaceId = (json: unknown): string | null => stringAt(json, 'result.pane.workspace_id');
 
 /**
  * The session file of a started agent.

@@ -2,18 +2,18 @@
   "version": 1,
   "id": "2026-10-18-l2-wake-transport-an-in-process-timer-so-a-time-wait-of-minu",
   "goal": "L2 wake transport: an in-process timer, so a time wait of minutes needs no systemd unit",
-  "status": "running",
+  "status": "done",
   "baton": {
     "sessionPath": "/home/oicey/.pi/agent/sessions/--data-dev-engram--/2026-10-18T13-48-34-184Z_01a14f45-7407-7553-9fb1-04064d9462a7.jsonl",
     "paneId": "w13:p2",
     "startedAt": "2026-10-18T13:48:37.014Z"
   },
   "createdAt": "2026-10-18T13:48:26.618Z",
-  "updatedAt": "2026-10-18T15:03:56.641Z",
-  "closedAt": null,
-  "closeReason": null,
+  "updatedAt": "2026-10-18T15:09:57.179Z",
+  "closedAt": "2026-10-18T15:09:57.179Z",
+  "closeReason": "completed",
   "rounds": 0,
-  "reports": 2,
+  "reports": 3,
   "wake": null,
   "wakeSeq": 1,
   "lastDigest": null,
@@ -22,7 +22,11 @@
   "blocker": null,
   "lastNote": "L2 delivered, verified live (RPC mode: agent_start #2 + wake:null), committed 5ac1a21; waiting on the adversarial review of the diff before claiming done",
   "pendingVerdict": null,
-  "lastVerdict": null,
+  "lastVerdict": {
+    "passed": true,
+    "detail": "1 command(s) exited 0",
+    "at": "2026-10-18T15:09:57.179Z"
+  },
   "pendingHandoff": null,
   "pendingWakes": []
 }

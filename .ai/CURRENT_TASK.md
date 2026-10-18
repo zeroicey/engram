@@ -1,6 +1,11 @@
 # Current task
 
-**Status:** 🟡 Pi-only (0.5.0, unpublished) · goal engine M1–M4 done; **L1+L2+L3 wake transports all live** · **Updated:** 2026-10-18
+**Status:** 🟡 Pi-only (0.5.0, unpublished) · goal engine M1–M4 done; L1+L2+L3 wake transports live; **handoff opens a window in this space** · **Updated:** 2026-10-18
+
+> **两套「当前任务」的边界**：本文是**项目的位置**（durable）；`.ai/goal/<id>/` 是**当前这一轮的合约**（有
+> `done_when`、由机器判定、结束后归档）。`dump` 里前者渲染为 `project:`、后者渲染为 `GOAL / run:`。
+> 一个 goal 只服务于本文 checklist 里的某一项（可以是研究、开发、或一个任务表的条目）。见
+> `.ai/decisions/2026-10-18-the-goal-is-a-slice-of-the-project-not-a-second-current-task.md`。
 
 ## Goal
 
@@ -115,8 +120,14 @@ is what lets a project like `research` own its own partitions while this is buil
 - [x] **2026-10-18 this repo dogfoods the loop it builds**: `.engram/config.json` has
       `goal.enabled`, `.pi/extensions/engram-goal.ts` is committed, and the live run above was driven
       through the real CLI
-- [x] **M4**: `goal_handoff` opening a successor pane through herdr and transferring the baton
-      (landed 2026-10-18, `3a61fed`; the spawn itself is still the untested half — see the handoff)
+- [x] **M4**: `goal_handoff` opening a successor **window** through herdr and transferring the baton
+      (landed 2026-10-18, `3a61fed`; tab-based since `2026-10-18`, and the spawn is now verified live)
+- [x] **2026-10-18 the successor opens as a tab, pinned to this project's space.** A `pane split` made the
+      human's window narrower on every handoff, and `tab create` without `--workspace` targets the
+      *focused* space — which may be another project. `successorWorkspace` resolves
+      `HERDR_WORKSPACE_ID` → the baton pane's own `workspace_id` → **refuse**; `--workspace` pins it, a
+      window whose agent never started is closed again. See
+      `.ai/decisions/2026-10-18-a-successor-window-opens-in-the-current-herdr-space.md`
 - [ ] **The user's question — "can I use this while developing?" — answered as far as it can be
       today**: the goal loop is usable now (create → work → report; a `wait` is releasable by a new
       run or an installed unit; a handoff opens a pane). The two gaps are structural and named in the
@@ -172,6 +183,9 @@ other's type.
    while `pendingHandoff` is set, so a baton transfer that does not retire it leaves the successor
    never-nudged and escalates "requested but never taken" about a handoff that landed. Ask of any
    `pending*` field: which transition retires it, on every path?
+- `.ai/pitfalls/cases/a-handoff-landed-in-the-focused-space.md` — anything that opens a window and depends
+  on where the human's focus is will eventually act in the wrong project. The successor's space has three
+  sources and a refusal, never a default.
 - `.ai/pitfalls/cases/a-wake-consumed-before-it-was-delivered.md` — the consume-then-deliver ordering in
   both transports: a satisfied `poll` peeks, the claim releases, and `runGoalWake` delivers before it
   writes. Ask of any transport: if delivery fails here, what still knows the goal is waiting?

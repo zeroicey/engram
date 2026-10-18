@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadMemory, parseCurrentTask, decisionStatus } from '../src/core/memory.js';
 import { buildFingerprint, trimTo } from '../src/core/fingerprint.js';
-import { sandbox, seedBank } from './helpers.js';
+import { sandbox, seedBank, runCli } from './helpers.js';
 import { aiCurrentTask } from '../src/templates/ai-files.js';
 
 test('parseCurrentTask extracts goal, next action and skips table noise', () => {
@@ -333,4 +333,24 @@ test('an over-long skill list is bounded rather than eating the budget', async (
   const fp = buildFingerprint(await loadMemory(sb.root));
   assert.ok(Buffer.byteLength(fp.markdown, 'utf8') <= 1500);
   assert.match(fp.markdown, /skills: \/handoff/, 'canonical names are kept');
+});
+test('the project goal and the current run are distinguishable, not two things called a goal', async (t) => {
+  // The goal engine added `.ai/goal/<id>/BRIEF.md`, which the fingerprint renders as the GOAL block —
+  // so a project with an active goal had TWO lines labelled `goal` in one 1400-byte digest, and a fresh
+  // session could not tell which one it was supposed to work on. They are different scopes, so they get
+  // different words: `project:` is where the repository stands, the GOAL block is the current run.
+  const sb = await sandbox('engram-fp-goalwords-');
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  await runCli(['goal', 'new', 'ship the timer', '--cmd', 'npm test', '--root', sb.root]);
+
+  const fp = buildFingerprint(await loadMemory(sb.root));
+  assert.match(fp.markdown, /^project: /m, 'the durable project goal says so');
+  assert.match(fp.markdown, /^GOAL$/m);
+  assert.match(fp.markdown, /^  run: ship the timer$/m, 'the run is a run');
+  assert.equal(
+    (fp.markdown.match(/^goal: /gm) ?? []).length,
+    0,
+    'no line may be labelled `goal` when the GOAL block means something else by it',
+  );
 });

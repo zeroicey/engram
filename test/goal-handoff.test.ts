@@ -1,19 +1,22 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runCli, sandbox, seedBank, type Sandbox } from './helpers.js';
-import { handoffPrompt, runGoalHandoff } from '../src/commands/goal.js';
+import { handoffPrompt, runGoalHandoff, successorWorkspace, successorLabel } from '../src/commands/goal.js';
 import { readGoalRecord } from '../src/core/goal-store.js';
 import {
   createdPaneId,
+  createdTabId,
   herdrAgentStartArgs,
-  herdrPaneSplitArgs,
+  herdrPaneGetArgs,
+  herdrTabCreateArgs,
+  paneWorkspaceId,
   startedSessionPath,
   stringAt,
   type HerdrRun,
 } from '../src/core/herdr.js';
 
 /**
- * M4: the handoff — open a successor pane through herdr and move the baton into it.
+ * M4: the handoff — open a successor *window* through herdr and move the baton into it.
  *
  * The risky parts are the *ordering* and the failure edges, not the happy path: a handoff that
  * transfers the baton before the successor can receive a brief orphans the goal, and one that prompts
@@ -21,18 +24,47 @@ import {
  * here, along with the rule that nothing opens a pane outside herdr.
  */
 
-// The real shapes, captured from herdr 0.8.2 on 2026-10-18 (a probe pane was split, started and
-// closed for exactly this). A hand-written fixture would have encoded my guess instead.
-const SPLIT_REPLY = {
-  id: 'cli:pane:split',
+// The real shapes, captured from herdr on 2026-10-18. The tab one is from an actual
+// `herdr tab create --no-focus` probe that was closed immediately after; a hand-written fixture would
+// have encoded my guess instead of the runtime's answer.
+const TAB_REPLY = {
+  id: 'cli:tab:create',
   result: {
-    pane: {
+    root_pane: {
       agent_status: 'unknown',
       cwd: '/data/dev/engram',
       focused: false,
+      foreground_cwd: '/data/dev/engram',
       pane_id: 'wN:p1M',
+      revision: 0,
       tab_id: 'wN:t1C',
       workspace_id: 'wN',
+    },
+    tab: {
+      agent_status: 'unknown',
+      focused: false,
+      label: 'goal-2026-10-18-ship-m4',
+      number: 2,
+      pane_count: 1,
+      tab_id: 'wN:t1C',
+      workspace_id: 'wN',
+    },
+    type: 'tab_created',
+  },
+};
+
+/** `pane get` on the pane that holds the baton — read only for its workspace. */
+const PANE_GET_REPLY = {
+  id: 'cli:pane:get',
+  result: {
+    pane: {
+      agent: 'pi',
+      pane_id: 'w13:p1',
+      tab_id: 'w13:t1',
+      workspace_id: 'w13',
+      cwd: '/data/dev/engram',
+      focused: false,
+      label: 'engram',
     },
     type: 'pane_info',
   },
@@ -61,17 +93,22 @@ const START_REPLY = {
 
 // ------------------------------------------------------------------ the runtime contract
 
-test('the split names its target pane, because herdr otherwise splits whatever was focused', () => {
-  assert.deepEqual(herdrPaneSplitArgs('w13:p1', '/data/dev/engram'), [
-    'pane',
-    'split',
-    'w13:p1',
-    '--direction',
-    'right',
+test('the successor opens as a tab, not a split, and the tab names its goal', () => {
+  // The reason is the human's experience, measured: a handoff used to split the holder's pane to the
+  // right, so every handoff made that window one column narrower and dropped the successor beside a
+  // transcript it shares no context with. A tab is a window of its own in the same workspace.
+  assert.deepEqual(herdrTabCreateArgs('w13', '/data/dev/engram', 'goal-ship-m4'), [
+    'tab',
+    'create',
+    '--workspace',
+    'w13',
     '--cwd',
     '/data/dev/engram',
+    '--label',
+    'goal-ship-m4',
     '--no-focus',
   ]);
+  assert.deepEqual(herdrPaneGetArgs('w13:p1'), ['pane', 'get', 'w13:p1']);
   assert.deepEqual(herdrAgentStartArgs('goal-x', 'pi', 'wN:p1M', 60_000), [
     'agent',
     'start',
@@ -85,11 +122,15 @@ test('the split names its target pane, because herdr otherwise splits whatever w
   ]);
 });
 
-test('the successor pane and its session file come out of herdr’s own answers', () => {
-  assert.equal(createdPaneId(SPLIT_REPLY), 'wN:p1M');
+test('the successor window, its pane, its tab and the session file come out of herdr’s own answers', () => {
+  assert.equal(createdPaneId(TAB_REPLY), 'wN:p1M', 'the root pane of the new tab is where the agent goes');
+  assert.equal(createdTabId(TAB_REPLY), 'wN:t1C');
+  assert.equal(paneWorkspaceId(PANE_GET_REPLY), 'w13');
   assert.equal(startedSessionPath(START_REPLY), '/home/oicey/.pi/agent/sessions/--data-dev-engram--/2026-10-18T13-39-49-337Z_01a14f3d.jsonl');
   // An unexpected shape is `null`, not a thrown TypeError that reads as "engram is broken".
   assert.equal(createdPaneId({ result: { type: 'pane_info' } }), null);
+  assert.equal(createdTabId({ result: {} }), null);
+  assert.equal(paneWorkspaceId({ result: { pane: {} } }), null);
   assert.equal(startedSessionPath(null), null);
   assert.equal(stringAt({ result: { pane_id: '' } }, 'result.pane_id'), null, 'an empty id is not an id');
 });
@@ -121,7 +162,7 @@ async function goalWithBaton(): Promise<{ sb: Sandbox; id: string; holder: strin
   return { sb, id, holder, pane };
 }
 
-/** A herdr whose two JSON verbs answer with the captured shapes. */
+/** A herdr whose JSON verbs answer with the captured shapes. */
 function fakeHerdr(): { calls: string[][]; deps: { run: (argv: string[]) => Promise<HerdrRun> } } {
   const calls: string[][] = [];
   return {
@@ -129,7 +170,8 @@ function fakeHerdr(): { calls: string[][]; deps: { run: (argv: string[]) => Prom
     deps: {
       run: async (argv: string[]): Promise<HerdrRun> => {
         calls.push(argv);
-        if (argv[0] === 'pane' && argv[1] === 'split') return { status: 0, stdout: JSON.stringify(SPLIT_REPLY), error: null };
+        if (argv[0] === 'pane' && argv[1] === 'get') return { status: 0, stdout: JSON.stringify(PANE_GET_REPLY), error: null };
+        if (argv[0] === 'tab' && argv[1] === 'create') return { status: 0, stdout: JSON.stringify(TAB_REPLY), error: null };
         if (argv[0] === 'agent' && argv[1] === 'start') return { status: 0, stdout: JSON.stringify(START_REPLY), error: null };
         return { status: 0, stdout: '{"result":{}}', error: null };
       },
@@ -137,7 +179,7 @@ function fakeHerdr(): { calls: string[][]; deps: { run: (argv: string[]) => Prom
   };
 }
 
-test('a handoff opens a pane, starts pi, transfers the baton, then prompts', async () => {
+test('a handoff opens a window, starts pi, transfers the baton, then prompts', async () => {
   const { sb, id, holder, pane } = await goalWithBaton();
   try {
     const herdr = fakeHerdr();
@@ -154,12 +196,16 @@ test('a handoff opens a pane, starts pi, transfers the baton, then prompts', asy
     // The order is the design: baton before prompt, or the successor's first turn is refused.
     assert.deepEqual(
       herdr.calls.map((c) => c.slice(0, 2).join(' ')),
-      ['pane split', 'agent start', 'agent prompt'],
+      ['pane get', 'tab create', 'agent start', 'agent prompt'],
     );
-    assert.equal(herdr.calls[0]?.[2], pane, 'it splits beside the pane that holds the baton');
-    assert.equal(herdr.calls[1]?.[2], 'goal-2026-10-18-ship-m4');
-    assert.equal(herdr.calls[2]?.[2], 'wN:p1M', 'the brief goes to the pane that was just created');
-    assert.match(herdr.calls[2]?.[3] ?? '', /taking the baton for the long-running goal/);
+    assert.equal(herdr.calls[0]?.[2], pane, 'the holder\'s pane is read for its workspace');
+    assert.deepEqual(herdr.calls[1]?.slice(2, 4), ['--workspace', 'w13'], 'the successor lands in the same workspace');
+    assert.deepEqual(herdr.calls[1]?.slice(4, 6), ['--cwd', sb.root]);
+    assert.match(herdr.calls[1]?.join(' ') ?? '', /--label goal-2026-10-18-ship-m4/, 'a window with no name is a number in the tab bar');
+    assert.ok(herdr.calls[1]?.includes('--no-focus'), 'a handoff must not steal the keyboard');
+    assert.equal(herdr.calls[2]?.[2], 'goal-2026-10-18-ship-m4');
+    assert.equal(herdr.calls[3]?.[2], 'wN:p1M', 'the brief goes to the pane that was just created');
+    assert.match(herdr.calls[3]?.[3] ?? '', /taking the baton for the long-running goal/);
 
     const after = await readGoalRecord(sb.root, id);
     assert.equal(after.record?.baton?.paneId, 'wN:p1M');
@@ -190,7 +236,7 @@ test('outside herdr nothing is opened, and nothing is recorded as pending', asyn
   }
 });
 
-test('a failed split keeps the request on the record, so the stale escalation still applies', async () => {
+test('a window that cannot be opened keeps the request on the record, so the stale escalation still applies', async () => {
   const { sb, id, holder } = await goalWithBaton();
   try {
     const calls: string[][] = [];
@@ -198,18 +244,23 @@ test('a failed split keeps the request on the record, so the stale escalation st
       root: sb.root,
       id,
       sessionPath: holder,
-      env: { HERDR_ENV: '1' },
+      env: { HERDR_ENV: '1', HERDR_WORKSPACE_ID: 'w13' },
       herdr: {
         run: async (argv) => {
           calls.push(argv);
-          return { status: 2, stdout: '', error: 'no space for a new pane' };
+          if (argv[0] === 'pane' && argv[1] === 'get') return { status: 0, stdout: JSON.stringify(PANE_GET_REPLY), error: null };
+          return { status: 2, stdout: '', error: 'no space for a new window' };
         },
       },
     });
     assert.equal(r.exitCode, 1);
-    assert.match(r.lines.join('\n'), /could not open a successor pane/);
+    assert.match(r.lines.join('\n'), /could not open a successor window/);
     assert.match(r.lines.join('\n'), /stale-handoff escalation still applies/);
-    assert.deepEqual(calls.map((c) => c.slice(0, 2).join(' ')), ['pane split'], 'no agent is started with nowhere to put it');
+    assert.deepEqual(
+      calls.map((c) => c.slice(0, 2).join(' ')),
+      ['pane get', 'tab create'],
+      'no agent is started with nowhere to put it',
+    );
     const after = await readGoalRecord(sb.root, id);
     assert.notEqual(after.record?.pendingHandoff, null, 'the request is the evidence');
     assert.equal(after.record?.baton?.sessionPath, holder);
@@ -228,7 +279,8 @@ test('a successor that never received the brief does not keep the baton', async 
       env: { HERDR_ENV: '1' },
       herdr: {
         run: async (argv): Promise<HerdrRun> => {
-          if (argv[0] === 'pane') return { status: 0, stdout: JSON.stringify(SPLIT_REPLY), error: null };
+          if (argv[0] === 'pane' && argv[1] === 'get') return { status: 0, stdout: JSON.stringify(PANE_GET_REPLY), error: null };
+          if (argv[0] === 'tab') return { status: 0, stdout: JSON.stringify(TAB_REPLY), error: null };
           if (argv[0] === 'agent' && argv[1] === 'start') return { status: 0, stdout: JSON.stringify(START_REPLY), error: null };
           // `agent prompt` refuses, as it does when the target is already blocked.
           return { status: 0, stdout: '{"error":{"code":"agent_blocked"}}', error: null };
@@ -307,4 +359,119 @@ test('the extension acts on a handoff request, and reports the outcome in the to
   assert.match(src, /res\.reason === "handoff requested"/);
   assert.match(src, /"goal",\s*"handoff",\s*"--json"/);
   assert.match(src, /handoff was NOT taken/);
+});
+
+// ------------------------------------------------------------------ the workspace rule
+
+test('the successor window is pinned to this project’s space, from three sources', () => {
+  // One herdr space is one project (`successorWorkspace`), so this is the rule that keeps a handoff from
+  // opening a window in another project. The environment wins because it is *this session's* space.
+  assert.deepEqual(
+    successorWorkspace({ env: { HERDR_WORKSPACE_ID: 'w13' }, paneWorkspace: 'w13' }),
+    { workspace: 'w13', detail: 'workspace w13 (from the pane environment)' },
+  );
+  // No environment (an older herdr, a hand-driven call): the baton's own pane is read instead.
+  assert.deepEqual(successorWorkspace({ env: {}, paneWorkspace: 'w14' }), {
+    workspace: 'w14',
+    detail: "workspace w14 (from the baton's pane)",
+  });
+  // Neither: REFUSE. `tab create` without `--workspace` targets the *focused* space, and a goal whose
+  // successor appears in whatever project the human last clicked is the failure this rule exists for.
+  const none = successorWorkspace({ env: {}, paneWorkspace: null });
+  assert.equal(none.workspace, null);
+  assert.match(none.detail, /cannot tell which herdr workspace/);
+  // A disagreement is reported, not buried: it means the goal was created in a different window.
+  const split = successorWorkspace({ env: { HERDR_WORKSPACE_ID: 'w13' }, paneWorkspace: 'w14' });
+  assert.equal(split.workspace, 'w13', 'this session decides where its own successor goes');
+  assert.match(split.detail, /this session is in w13 but the baton's pane is in w14/);
+});
+
+test('a handoff never opens a window when the workspace cannot be determined', async () => {
+  const { sb, id, holder } = await goalWithBaton();
+  try {
+    const calls: string[][] = [];
+    const r = await runGoalHandoff({
+      root: sb.root,
+      id,
+      sessionPath: holder,
+      // The environment says nothing, and the pane cannot be read: nothing may be opened.
+      env: { HERDR_ENV: '1' },
+      herdr: {
+        run: async (argv): Promise<HerdrRun> => {
+          calls.push(argv);
+          return { status: 1, stdout: '', error: 'pane not found' };
+        },
+      },
+    });
+    assert.equal(r.exitCode, 1);
+    assert.match(r.lines.join('\n'), /could not place the successor window/);
+    assert.match(r.lines.join('\n'), /another project/);
+    assert.deepEqual(
+      calls.map((c) => c.slice(0, 2).join(' ')),
+      ['pane get'],
+      'tab create must never run without a workspace: it would use the focused one',
+    );
+    const after = await readGoalRecord(sb.root, id);
+    assert.equal(after.record?.baton?.sessionPath, holder, 'the baton does not move on a refusal');
+    assert.notEqual(after.record?.pendingHandoff, null, 'the request stays, so the stale escalation applies');
+  } finally {
+    await sb.cleanup();
+  }
+});
+
+test('a window whose agent never started is closed again, so no empty window is left behind', async () => {
+  const { sb, id, holder } = await goalWithBaton();
+  try {
+    const calls: string[][] = [];
+    const r = await runGoalHandoff({
+      root: sb.root,
+      id,
+      sessionPath: holder,
+      env: { HERDR_ENV: '1', HERDR_WORKSPACE_ID: 'w13' },
+      herdr: {
+        run: async (argv): Promise<HerdrRun> => {
+          calls.push(argv);
+          if (argv[0] === 'pane' && argv[1] === 'get') return { status: 0, stdout: JSON.stringify(PANE_GET_REPLY), error: null };
+          if (argv[0] === 'tab' && argv[1] === 'create') return { status: 0, stdout: JSON.stringify(TAB_REPLY), error: null };
+          // `agent start` answers without a session path — what a first run in an untrusted directory
+          // does, because pi stops at "Trust project folder?" and never becomes ready.
+          if (argv[0] === 'agent' && argv[1] === 'start') return { status: 0, stdout: '{"result":{}}', error: null };
+          return { status: 0, stdout: '{"result":{"type":"ok"}}', error: null };
+        },
+      },
+    });
+    assert.equal(r.exitCode, 1);
+    assert.deepEqual(
+      calls.map((c) => c.slice(0, 2).join(' ')),
+      ['pane get', 'tab create', 'agent start', 'tab close'],
+      'the window is undone rather than left in the tab bar',
+    );
+    assert.equal(calls[3]?.[2], 'wN:t1C', 'the tab that was just created is the one closed');
+    assert.match(r.lines.join('\n'), /window wN:t1C closed again/);
+    assert.match(r.lines.join('\n'), /Trust project folder/);
+    const after = await readGoalRecord(sb.root, id);
+    assert.equal(after.record?.baton?.sessionPath, holder, 'the baton never moved');
+  } finally {
+    await sb.cleanup();
+  }
+});
+
+test('a pinned workspace overrides the environment, for a human fixing a mismatch', async () => {
+  const { sb, id, holder } = await goalWithBaton();
+  try {
+    const herdr = fakeHerdr();
+    const r = await runGoalHandoff({
+      root: sb.root,
+      id,
+      sessionPath: holder,
+      workspaceId: 'w99',
+      env: { HERDR_ENV: '1', HERDR_WORKSPACE_ID: 'w13' },
+      herdr: herdr.deps,
+    });
+    assert.equal(r.exitCode, 0, r.lines.join('\n'));
+    assert.deepEqual(herdr.calls[1]?.slice(2, 4), ['--workspace', 'w99']);
+    assert.match(r.lines.join('\n'), /workspace w99 \(pinned by --workspace\)/);
+  } finally {
+    await sb.cleanup();
+  }
 });

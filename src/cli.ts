@@ -135,7 +135,7 @@ GOAL VERBS
   engram goal status | list | check [--id <id>] | close [--id <id>] [--abandoned]
   engram goal wake --reason "<why>" [--token <token>] [--id <id>] [--deliver]
   engram goal unit <id> --job "<command>" [--write] [--engram <path>]
-  engram goal handoff [--id <id>] [--reason "<why now>"] [--json]   # open a successor pane
+  engram goal handoff [--id <id>] [--reason "<why now>"] [--workspace <ws>] [--json]  # open a successor window
   engram goal baton --session <path> [--pane <pane-id>] [--id <id>]
 
   A goal is judged, not asserted: \`done\` requires the engine to observe \`done_when\`.
@@ -391,6 +391,7 @@ async function cmdGoal(root: string, args: Args): Promise<number> {
         reason: str(args.flags, 'reason'),
         name: str(args.flags, 'name'),
         paneId: str(args.flags, 'pane'),
+        ...(str(args.flags, 'workspace') ? { workspaceId: str(args.flags, 'workspace') as string } : {}),
         ...(identity.sessionPath ? { sessionPath: identity.sessionPath } : {}),
       });
       if (flag(args.flags, 'json')) {

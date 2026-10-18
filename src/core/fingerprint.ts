@@ -111,7 +111,12 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
 
   const now: string[] = [];
   if (t?.status) now.push(line('state', t.status));
-  if (t?.goal) now.push(line('goal', t.goal, 120));
+  // `project:` and not `goal:`, because the goal engine added a second thing that is called a goal —
+  // `.ai/goal/<id>/BRIEF.md`, rendered as the GOAL block below. Two lines labelled `goal` in one
+  // 1400-byte fingerprint is a fresh session being told there are two tasks and not which one to work
+  // on. The distinction is real and worth the byte: `project:` is where the **repository** stands
+  // (durable, human-owned), the GOAL block is the **current run** (bounded, and judged by `done_when`).
+  if (t?.goal) now.push(line('project', t.goal, 120));
   if (t?.codeState) now.push(line('branch', t.codeState, 110));
   if (t?.nextAction) now.push(line('next', t.nextAction, 120));
   for (const b of t?.blockers ?? []) now.push(line('blocked', b, 100));
@@ -130,7 +135,7 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
     const g = goal.record;
     const goalLines = [
       `  id: ${g.id} · ${g.status}${g.closedAt ? ` (${g.closeReason})` : ''} · ${g.rounds} rounds`,
-      `  goal: ${trimTo(g.goal, 100)}`,
+      `  run: ${trimTo(g.goal, 100)}`,
     ];
     if (g.blocker) goalLines.push(`  blocked: ${trimTo(`${g.blocker.reason}${g.blocker.needs ? ` — needs ${g.blocker.needs}` : ''}`, 80)}`);
     if (g.wake) goalLines.push(`  waiting since ${g.wake.requestedAt} · deadline ${g.wake.deadlineAt}`);
