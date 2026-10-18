@@ -7,6 +7,7 @@ import { runInit, runSync } from './commands/init.js';
 import { renderDump, runDump } from './commands/dump.js';
 import { isMemoryKind, runNew, runNewSection, type MemoryKind } from './commands/new.js';
 import { readSections } from './core/sections.js';
+import { findGitRepository, type GitCheck } from './core/git.js';
 import { SKILL_NAMES } from './templates/skills.js';
 import { toolSummary } from './templates/meta-prompt.js';
 import { writeFile } from './core/project.js';
@@ -122,7 +123,51 @@ SKILLS (canonical: .ai/skills/*.md)
   ${SKILL_NAMES.map((s) => `/${s}`).join('  ')}
 `;
 
+/**
+ * Precondition for `init`: a git repository must enclose the target.
+ *
+ * A bank that cannot be diffed cannot be audited, and an autonomous run that rewrites
+ * `.ai/CURRENT_TASK.md` for twenty rounds has no other record. The refusal therefore happens
+ * **before any write** and leaves the filesystem untouched — a half-initialised project would be
+ * the worst of both worlds. There is deliberately no override flag (see the decision of
+ * 2026-10-18): if a real non-git need appears it comes back as a decision, not a `--force`.
+ *
+ * Only `init` is gated. `dump`, `sync` and `new` keep working in a bank that already exists in a
+ * non-git directory, so an existing bank is never taken away from a project.
+ */
+async function requireGitRepository(root: string): Promise<GitCheck | null> {
+  const check = await findGitRepository(root);
+  if (check.hasRepository) {
+    if (check.repositoryRoot !== root) {
+      const kind = check.marker === 'file' ? 'linked worktree' : 'repository';
+      console.log(`using enclosing git ${kind} at ${check.repositoryRoot}`);
+    }
+    return check;
+  }
+
+  console.error(`engram init refuses to run: ${root} is not inside a git repository.`);
+  console.error('');
+  console.error('  The memory bank is the audit trail: it has to be diffable and bisectable,');
+  console.error('  and a non-git directory gives it no history at all.');
+  console.error('');
+  console.error('  Fix it in one of two ways:');
+  console.error(`    git init            # make ${root} a repository`);
+  console.error('    engram init --root <path-inside-a-repository>');
+  console.error('');
+  console.error('  Nothing was written.');
+  return null;
+}
+
 async function cmdInit(root: string, args: Args): Promise<number> {
+  // Before option parsing side effects and before any write: refusing afterwards would mean
+  // either partial output or a rollback, and a rollback that misses one file is worse than the flag.
+  const repository = await requireGitRepository(root);
+  if (repository === null) return 1;
+  // A dry run must not report a success that a real run would refuse.
+  if (repository.repositoryRoot !== root) {
+    console.log(`note: the bank lives in ${root}; the enclosing repository root is ${repository.repositoryRoot}`);
+  }
+
   const all = flag(args.flags, 'all');
   const list = str(args.flags, 'tools');
   const toolIds = all

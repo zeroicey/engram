@@ -11,9 +11,36 @@ export interface Sandbox {
   cleanup(): Promise<void>;
 }
 
-/** Isolated temp directory; every test gets its own project root. */
+/**
+ * Isolated temp directory; every test gets its own project root.
+ *
+ * The sandbox is a **git repository** by default, because `engram init` refuses to run anywhere
+ * else (see `.ai/decisions/2026-10-18-require-a-git-repository-before-engram-initializes.md`).
+ * Making that the default keeps every existing test honest: they exercise the real precondition
+ * instead of a special-cased path. Tests that need the refusal use `sandboxWithoutGit`.
+ */
 export async function sandbox(prefix = 'engram-test-'): Promise<Sandbox> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  await makeGitDir(root);
+  return sandboxAt(root);
+}
+
+/** A sandbox that is **not** inside a working tree, for asserting the `init` refusal. */
+export async function sandboxWithoutGit(prefix = 'engram-nogit-'): Promise<Sandbox> {
+  return sandboxAt(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
+}
+
+/**
+ * Write a minimal but real `.git` directory. Not a valid repository (no objects/refs), only the
+ * marker the precondition looks for — engram never shells out to git.
+ */
+async function makeGitDir(root: string): Promise<void> {
+  await fs.mkdir(path.join(root, '.git', 'objects'), { recursive: true });
+  await fs.writeFile(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+}
+
+/** Attach the sandbox helpers to an existing directory. */
+function sandboxAt(root: string): Sandbox {
   return {
     root,
     async write(rel, content) {

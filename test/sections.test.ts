@@ -650,7 +650,9 @@ test('sync refuses to write a carrier through a symlink out of the project', asy
   await fsp.symlink(outDir.root, `${q.root}/.agents/skills`);
   const sync = await runSync(q.root);
   assert.ok(sync.warnings.some((w) => /symlinked directory/.test(w)), 'the refusal must be announced');
-  assert.deepEqual(await fsp.readdir(outDir.root), [], 'sync populated a directory outside the project');
+  // `.git` is present because every sandbox is a repository now (init requires one); what
+  // matters is that sync added nothing of its own to the outside directory.
+  assert.deepEqual((await fsp.readdir(outDir.root)).filter((n) => n !== '.git'), [], 'sync populated a directory outside the project');
 });
 
 test('declaring a section must not evict pitfalls from the fingerprint', async (t) => {

@@ -364,6 +364,7 @@ test('project detection reads stack, scripts and existing rule files', async (t)
     [],
     'with no candidates the leaf layer knows nothing about vendors',
   );
-  assert.equal(facts.hasGit, false);
+  // The sandbox is a git repository by default (init requires one), so `hasGit` is true here.
+  assert.equal(facts.hasGit, true);
 });
 
