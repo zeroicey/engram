@@ -1,6 +1,6 @@
 # Current task
 
-**Status:** 🟡 Pi-only (0.5.0, unpublished) · goal engine M1+M2+M3/L3 done; **M4 next** · **Updated:** 2026-10-18
+**Status:** 🟡 Pi-only (0.5.0, unpublished) · goal engine M1+M2+M3-L3+M4 done; **L2 next** · **Updated:** 2026-10-18
 
 ## Goal
 
@@ -88,7 +88,13 @@ is what lets a project like `research` own its own partitions while this is buil
       three hard-coded filename shapes, so `.github/prompts/*.prompt.md` survived every `sync` in
       every repo that ever used that adapter. Now it enumerates the directory
 - [ ] **M3 L1/L2**: L1 needs no code (a new run releases the latch); L2 (an in-process timer) is
-      still a `schedule-wake` effect with no transport
+      still a `schedule-wake` effect with no transport — **the next task**
+- [x] **2026-10-18 M4: the handoff opens the successor pane.** `engram goal handoff` drives herdr in
+      five ordered steps — record → split beside the holder's pane → start pi → **transfer the baton**
+      → prompt with a brief that names the bank files. The baton is the stop signal: the predecessor's
+      events fail `holdsBaton` afterwards, so "stop after handing off" is enforced, not requested
+- [x] **2026-10-18 M4: the extension acts on a handoff report** instead of only reporting the request,
+      which was the M3 "nothing emits it" gap in a different costume. `--json` is the wire surface
 - [x] **2026-10-18 M3 L3: the wake emitter exists.** `engram goal unit <id> --job "…"` emits a
       systemd unit (`src/templates/systemd.ts`) whose `ExecStopPost` calls
       `engram goal wake --deliver`; `--write` puts it in `.ai/goal/<id>/`, printing is the default
@@ -107,6 +113,12 @@ is what lets a project like `research` own its own partitions while this is buil
       `goal.enabled`, `.pi/extensions/engram-goal.ts` is committed, and the live run above was driven
       through the real CLI
 - [ ] **M4**: `goal_handoff` opening a successor pane through herdr and transferring the baton
+- [ ] **The user's question — "can I use this while developing?" — answered as far as it can be
+      today**: the goal loop is usable now (create → work → report; a `wait` is releasable by a new
+      run or an installed unit; a handoff opens a pane). The two gaps are structural and named in the
+      handoff: `goal unit` needs a human to install the unit, and one goal per project means enabling
+      the engine changes every settlement in that repo (`engram config --goal off && engram sync`
+      reverses it). What has *not* been tested is a day of ordinary development under a live goal
 - [ ] **Run one real multi-hour goal.** The commit-at-settlement rule, the traceability promise and
       the 24h liveness deadline have only been reasoned about — the biggest untested assumption left
 - [ ] **Publish 0.5.0** (human, 2FA). The Pi-only break has never been installed by anyone
@@ -140,6 +152,10 @@ other's type.
 
 ## Pitfall reminders for the current branch
 
+- `.ai/pitfalls/cases/a-taken-handoff-left-the-goal-silent.md` — the continuation guard is silent
+   while `pendingHandoff` is set, so a baton transfer that does not retire it leaves the successor
+   never-nudged and escalates "requested but never taken" about a handoff that landed. Ask of any
+   `pending*` field: which transition retires it, on every path?
 - `.ai/pitfalls/cases/ambient-identity-silently-re-owns-the-goal.md` — a default that reads
   `process.env` changes who holds the baton; an in-process CLI test must scrub `PI_SESSION_FILE` and
   `HERDR_PANE_ID` (use `runCli` from `test/helpers.ts`), and a refusal is read from
@@ -174,15 +190,14 @@ other's type.
 
 Next action, in order:
 
-1. **M4 — `goal_handoff` opens a successor pane through herdr and transfers the baton.** Everything
-   needed is in place: `herdr agent prompt` is proven, `identityFromEnv` records a pane, and
-   `goal baton --pane` already transfers. Rule 5 of
-   `.ai/decisions/2026-10-18-split-long-running-agent-work-three-ways-herdr-runtime-pi-ex.md` is the
-   constraint: **handoff is agent-triggered, never code-triggered**, because `ctx.newSession()` is
-   command-only and unreachable from a tool — so the tool asks, the model opens the pane.
-2. **Then run one real multi-hour goal** with the unit emitter from this round. That is still the
-   largest untested assumption: the traceability/commit-at-settlement rule and the 24h liveness
-   deadline have been reasoned about, never exercised. The live job so far was `sleep 25`.
+1. **L2 — the in-process timer transport.** `engram goal wake` is proven and `schedule-wake` emits a
+   token, a condition and a deadline that nothing consumes. Rule 4 of
+   `.ai/decisions/2026-10-18-treat-waiting-as-a-first-class-goal-state-with-a-self-wake-c.md`: a
+   background task whose only job is to wait, so its completion *is* the timer. Rule 5 still holds — a
+   timer is not a long job, a 16-hour job is.
+2. **Then run one real multi-hour goal**, still the largest untested assumption: the
+   commit-at-settlement rule, the traceability promise and the 24h liveness deadline have been
+   reasoned about, never exercised. The live jobs so far were `sleep 25` and one handoff.
 3. **Then L2**: an in-process timer transport, so a `time` wait that is hours long does not need a
    unit.
 4. Publish 0.5.0 (**human**, 2FA), then let `research` declare `.ai/sections.json` themselves — that
