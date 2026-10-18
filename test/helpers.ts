@@ -74,6 +74,60 @@ function sandboxAt(root: string): Sandbox {
   };
 }
 
+export interface CliRun {
+  code: number;
+  out: string;
+  err: string;
+}
+
+/**
+ * Run the CLI in-process, capturing stdout/stderr.
+ *
+ * `identity` is not a convenience: `engram goal new` records its baton from `PI_SESSION_FILE` and
+ * `HERDR_PANE_ID` when they are present, which is exactly the behaviour that gives a goal a wake
+ * address to deliver to later. It also means a suite run *inside* pi and herdr would create goals
+ * already owned by the developer's own session — so a baton assertion would depend on the machine
+ * and on whether the test was started from a pane. Both variables are therefore **deleted by
+ * default**, and a test that wants an identity states it here.
+ */
+export async function runCli(
+  args: string[],
+  identity: { PI_SESSION_FILE?: string; HERDR_PANE_ID?: string } = {},
+): Promise<CliRun> {
+  const cli = await import('../src/cli.js');
+  const saved = {
+    session: process.env.PI_SESSION_FILE,
+    pane: process.env.HERDR_PANE_ID,
+  };
+  const apply = (key: 'PI_SESSION_FILE' | 'HERDR_PANE_ID', value: string | undefined): void => {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  };
+  apply('PI_SESSION_FILE', identity.PI_SESSION_FILE);
+  apply('HERDR_PANE_ID', identity.HERDR_PANE_ID);
+
+  const out: string[] = [];
+  const err: string[] = [];
+  const stdout = process.stdout.write.bind(process.stdout);
+  const stderr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = ((c: string | Uint8Array): boolean => {
+    out.push(typeof c === 'string' ? c : Buffer.from(c).toString('utf8'));
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((c: string | Uint8Array): boolean => {
+    err.push(typeof c === 'string' ? c : Buffer.from(c).toString('utf8'));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    return { code: await cli.main(args), out: out.join(''), err: err.join('') };
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+    apply('PI_SESSION_FILE', saved.session);
+    apply('HERDR_PANE_ID', saved.pane);
+  }
+}
+
 /** Minimal `.ai/` bank used by dump/fingerprint tests. */
 export async function seedBank(sb: Sandbox): Promise<void> {
   await sb.write(

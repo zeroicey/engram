@@ -7,8 +7,7 @@ import path from 'node:path';
 import { parseReportArgs, responseFromEffects, idleResponse } from '../src/core/goal-host.js';
 import { goalExtensionSource, GOAL_EXTENSION_PATH } from '../src/templates/goal-extension.js';
 import { newGoalRecord, type GoalEffect } from '../src/core/goal.js';
-import { sandbox, seedBank } from './helpers.js';
-import { main } from '../src/cli.js';
+import { runCli, sandbox, seedBank } from './helpers.js';
 
 /**
  * The pi adapter, tested without pi.
@@ -26,25 +25,13 @@ import { main } from '../src/cli.js';
 const T0 = '2026-10-18T10:00:00.000Z';
 const record = newGoalRecord({ id: 'g', goal: 'ship it', now: T0 });
 
+/**
+ * `main()` in-process. The runtime identity variables are deleted by `runCli`: a goal created while
+ * they are set is already owned by the developer's session, and every event below drives the goal
+ * without claiming a baton.
+ */
 async function run(args: string[]): Promise<{ code: number; out: string; err: string }> {
-  const out: string[] = [];
-  const err: string[] = [];
-  const stdout = process.stdout.write.bind(process.stdout);
-  const stderr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = ((c: string | Uint8Array): boolean => {
-    out.push(typeof c === 'string' ? c : Buffer.from(c).toString('utf8'));
-    return true;
-  }) as typeof process.stdout.write;
-  process.stderr.write = ((c: string | Uint8Array): boolean => {
-    err.push(typeof c === 'string' ? c : Buffer.from(c).toString('utf8'));
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    return { code: await main(args), out: out.join(''), err: err.join('') };
-  } finally {
-    process.stdout.write = stdout;
-    process.stderr.write = stderr;
-  }
+  return runCli(args);
 }
 
 // ---------------------------------------------------------------- wire format

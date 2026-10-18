@@ -14,7 +14,9 @@ import {
   runGoalList,
   runGoalNew,
   runGoalStatus,
+  runGoalUnit,
   runGoalWake,
+  identityFromEnv,
 } from './commands/goal.js';
 import { parseDoneWhen } from './core/goal-store.js';
 import type { DoneWhen, MetricOp } from './core/goal.js';
@@ -130,10 +132,13 @@ SYNC OPTIONS
 GOAL VERBS
   engram goal new "<text>" [--cmd "npm test" ...] [--metric file:path:op:value] [--checklist]
   engram goal status | list | check [--id <id>] | close [--id <id>] [--abandoned]
-  engram goal wake --reason "<why>" [--token <token>] [--id <id>]
-  engram goal baton --session <path> [--pane <id>] [--id <id>]
+  engram goal wake --reason "<why>" [--token <token>] [--id <id>] [--deliver]
+  engram goal unit <id> --job "<command>" [--write] [--engram <path>]
+  engram goal baton --session <path> [--pane <pane-id>] [--id <id>]
 
   A goal is judged, not asserted: \`done\` requires the engine to observe \`done_when\`.
+  \`unit\` emits a systemd unit that runs a long job and wakes the goal when it exits — the long job
+  must not live in the agent's process tree, or closing the pane orphans it.
 
 CONFIG OPTIONS
   --goal on|off      opt into the goal engine (writes .pi/extensions/engram-goal.ts on sync)
@@ -332,6 +337,14 @@ async function cmdGoal(root: string, args: Args): Promise<number> {
         doneWhen = parsed.doneWhen ?? undefined;
       } else if (checklist) doneWhen = { kind: 'checklist', file: 'TASKS.md' };
 
+      const identity = identityFromEnv();
+      // The runtime already knows who is asking: pi exports its session file, herdr its pane id.
+      // Recording them is what gives the goal a wake address to deliver to later; an explicit flag
+      // wins, and a variable that is absent stays absent rather than claiming a holder named after
+      // nothing.
+      const sessionPath = str(args.flags, 'session') ?? identity.sessionPath;
+      const paneId = str(args.flags, 'pane') ?? identity.paneId;
+
       return print(
         await runGoalNew({
           root,
@@ -339,8 +352,8 @@ async function cmdGoal(root: string, args: Args): Promise<number> {
           today: new Date().toISOString().slice(0, 10),
           ...(doneWhen ? { doneWhen } : {}),
           force: flag(args.flags, 'force'),
-          ...(str(args.flags, 'session') ? { sessionPath: str(args.flags, 'session') as string } : {}),
-          ...(str(args.flags, 'pane') ? { paneId: str(args.flags, 'pane') as string } : {}),
+          ...(sessionPath ? { sessionPath } : {}),
+          ...(paneId ? { paneId } : {}),
         }),
       );
     }
@@ -356,15 +369,45 @@ async function cmdGoal(root: string, args: Args): Promise<number> {
         console.error('error: goal wake needs --reason "<what ended>"');
         return 1;
       }
-      return print(await runGoalWake({ root, reason, id: str(args.flags, 'id'), token: str(args.flags, 'token') }));
+      return print(
+        await runGoalWake({
+          root,
+          reason,
+          id: str(args.flags, 'id'),
+          token: str(args.flags, 'token'),
+          deliver: flag(args.flags, 'deliver'),
+        }),
+      );
     }
-    case 'baton': {
-      const session = str(args.flags, 'session');
-      if (!session) {
-        console.error('error: goal baton needs --session <path>');
+    case 'unit': {
+      const job = str(args.flags, 'job');
+      if (!job) {
+        console.error('error: goal unit needs the job to run: --job "<command>"');
         return 1;
       }
-      return print(await runGoalBaton(root, session, str(args.flags, 'pane'), str(args.flags, 'id')));
+      const engram = str(args.flags, 'engram');
+      // The id is positional in the documented usage (`goal unit <id> --job "…"`), and `--id` is
+      // accepted too so the form matches every other verb.
+      const unitId = str(args.flags, 'id') ?? args._[2];
+      return print(
+        await runGoalUnit({
+          root,
+          job,
+          ...(unitId ? { id: unitId } : {}),
+          write: flag(args.flags, 'write'),
+          ...(engram ? { engram: [engram] } : {}),
+        }),
+      );
+    }
+    case 'baton': {
+      const session = str(args.flags, 'session') ?? identityFromEnv().sessionPath;
+      if (!session) {
+        console.error('error: goal baton needs --session <path> (or run inside a pi session)');
+        return 1;
+      }
+      return print(
+        await runGoalBaton(root, session, str(args.flags, 'pane') ?? identityFromEnv().paneId, str(args.flags, 'id')),
+      );
     }
     case 'close':
       return print(await runGoalClose(root, flag(args.flags, 'abandoned') ? 'abandoned' : 'cancelled', str(args.flags, 'id')));
@@ -386,7 +429,15 @@ async function cmdGoal(root: string, args: Args): Promise<number> {
         root,
         {
           event,
-          ...(str(args.flags, 'session') ? { sessionPath: str(args.flags, 'session') as string } : {}),
+          // The same runtime identity `goal new` records: pi exports the session file, herdr the pane
+          // id. Refusing an event because a *hand-driven* call omitted `--session` refused the one
+          // caller whose identity was never in doubt — the extension, which always passes it, was the
+          // only caller that worked. An absent variable still stays absent, so the baton check keeps
+          // refusing genuinely unidentified callers.
+          ...(() => {
+            const sessionPath = str(args.flags, 'session') ?? identityFromEnv().sessionPath;
+            return sessionPath ? { sessionPath } : {};
+          })(),
           ...(str(args.flags, 'reason') ? { reason: str(args.flags, 'reason') as string } : {}),
           ...(str(args.flags, 'token') ? { token: str(args.flags, 'token') as string } : {}),
           ...(report ? { report: report as never } : {}),
@@ -398,8 +449,9 @@ async function cmdGoal(root: string, args: Args): Promise<number> {
     }
     default:
       console.error(
-        'usage: engram goal <new|status|list|check|wake|baton|close|event>\n\n' +
+        'usage: engram goal <new|status|list|check|wake|unit|baton|close|event>\n\n' +
           '  new "<goal>" [--cmd "a && b"] [--metric file:path:op:value] [--checklist]\n' +
+          '  unit <id> --job "<command>" [--write]   # systemd unit that wakes on exit\n' +
           '  status | list | check [--id <id>] | close [--abandoned] [--id <id>]\n' +
           '  wake --reason "<why>" [--token <t>] | baton --session <path> [--pane <id>]\n' +
           '  event --type <settled|run-started|wake|reconcile|report|status> [--report <json>] [--session <path>]',

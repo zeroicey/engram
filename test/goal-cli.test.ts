@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { main } from '../src/cli.js';
-import { sandbox, seedBank } from './helpers.js';
+import { runCli, sandbox, seedBank } from './helpers.js';
 
 /**
  * `engram goal …` end to end, through `main()`.
@@ -9,28 +8,13 @@ import { sandbox, seedBank } from './helpers.js';
  * These are the tests that would have caught M1 shipping as a library with no verbs: the reducer was
  * green, the evaluator was green, and nothing could create a goal, declare a verdict, or deliver a
  * wake. Every case here drives the CLI the way a human or an adapter would.
+ *
+ * `runCli` deletes the runtime identity variables unless a test passes them, so a goal created here
+ * is unowned unless the test says otherwise — see the helper for why that matters.
  */
 
 async function run(args: string[]): Promise<{ code: number; out: string; err: string }> {
-  const out: string[] = [];
-  const err: string[] = [];
-  const stdout = process.stdout.write.bind(process.stdout);
-  const stderr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = ((c: string | Uint8Array): boolean => {
-    out.push(typeof c === 'string' ? c : Buffer.from(c).toString('utf8'));
-    return true;
-  }) as typeof process.stdout.write;
-  process.stderr.write = ((c: string | Uint8Array): boolean => {
-    err.push(typeof c === 'string' ? c : Buffer.from(c).toString('utf8'));
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    const code = await main(args);
-    return { code, out: out.join(''), err: err.join('') };
-  } finally {
-    process.stdout.write = stdout;
-    process.stderr.write = stderr;
-  }
+  return runCli(args);
 }
 
 /** A sandbox with a bank, so `dump` has something to read. */

@@ -6,13 +6,25 @@
  * the missing verb set, and it is deliberately the only place that reads a goal from the CLI — the
  * engine itself still holds no lifecycle code.
  *
- * Every command here is a plain filesystem operation on `.ai/goal/<id>/`. None of them runs an agent
- * loop, spawns a process or talks to herdr; `wake` records a token and asks the *caller* to deliver
- * it, which is the whole L3 transport contract from the waiting decision.
+ * Every command here is a plain filesystem operation on `.ai/goal/<id>/`. None of them runs an
+ * agent loop: `unit` *emits* a systemd unit (systemd runs the job, never this process), and
+ * `wake --deliver` hands the engine's own message to `herdr agent prompt` for the pane that holds
+ * the baton. Neither starts a long job, because the longer a job lives the less it may belong to the
+ * agent's process tree.
  */
 
 import path from 'node:path';
-import { pathExists, readFileSafe, writeFile, writeIfMissing } from '../core/project.js';
+import { constants, promises as fs } from 'node:fs';
+import {
+  pathExists,
+  readFileSafe,
+  resolvesInsideRoot,
+  writeFile,
+  writeFileGuarded,
+  writeIfMissing,
+} from '../core/project.js';
+import { paneForSessionPath, promptPane, type HerdrDeps } from '../core/herdr.js';
+import { engramCommand, goalUnitName, goalUnitSource, unitOutcome } from '../templates/systemd.js';
 import { workingTreeDigest } from '../core/git.js';
 import { evaluateDoneWhen, type DoneVerdict, type EvalDeps } from '../core/goal-eval.js';
 import {
@@ -278,6 +290,41 @@ export interface GoalWakeOptions {
   id?: string;
   token?: string;
   reason: string;
+  /**
+   * Deliver the nudge to the baton holder through herdr — the last hop of L3.
+   *
+   * Opt-in rather than default: `wake` stays a pure state transition that a human or a test can
+   * call, and only a caller that owns a transport (the generated unit's `ExecStopPost`) asks for
+   * delivery. Without it the wake is still recorded and still releases the latch.
+   */
+  deliver?: boolean;
+  /** Injected in tests; systemd's `ExecStopPost` exports the unit's outcome here. */
+  env?: NodeJS.ProcessEnv;
+  /** Injected in tests, so the delivery policy is testable without herdr installed. */
+  herdr?: HerdrDeps;
+}
+
+/**
+ * Deliver the engine's own message to whoever holds the baton.
+ *
+ * The holder is resolved *now*, from `goal.json` — which is what lets a wake survive a handoff: the
+ * pane recorded when the goal was created may be long gone, and the current holder's address is the
+ * only one worth using. A failure is reported loudly and is never a lost wake: the token stays
+ * latched, so a new run or the liveness deadline still recovers the goal.
+ */
+async function deliverNudge(record: GoalRecord, message: string, deps: HerdrDeps): Promise<string[]> {
+  let pane = record.baton?.paneId ?? null;
+  if (pane === null) {
+    const sessionPath = record.baton?.sessionPath;
+    if (sessionPath === undefined) {
+      return ['  deliver: NOT DELIVERED — the goal has no baton holder, so there is no pane to wake'];
+    }
+    const resolved = await paneForSessionPath(sessionPath, deps);
+    if (resolved.pane === null) return [`  deliver: NOT DELIVERED — ${resolved.detail}`];
+    pane = resolved.pane;
+  }
+  const res = await promptPane(pane, message, deps);
+  return [res.ok ? `  deliver: ${res.detail}` : `  deliver: NOT DELIVERED — ${res.detail}`];
 }
 
 /**
@@ -300,18 +347,30 @@ export async function runGoalWake(opts: GoalWakeOptions): Promise<GoalCliResult>
     return ok([`${active.id} is not waiting — wake ignored (already consumed, or never latched)`]);
   }
 
+  // systemd's ExecStopPost exports how the unit ended. Folding it into the reason is what keeps
+  // "the process exited" from being read as "the job succeeded" — an OOM kill exits too, and the
+  // engine cannot tell which happened. Passed on the command line it would have to survive systemd's
+  // own `$VAR` expansion; read from the environment it cannot be mangled.
+  const outcome = unitOutcome(opts.env ?? process.env);
+  const reason = outcome === null ? opts.reason : `${opts.reason} (${outcome})`;
+
   const step = reduce(
     { record: active.record, brief: await readGoalBrief(opts.root, active.id) },
-    { kind: 'wake', now: new Date().toISOString(), token, reason: opts.reason },
+    { kind: 'wake', now: new Date().toISOString(), token, reason },
   );
 
   if (step.record === active.record) {
     return ok([`wake ${token} ignored (already handled, or the goal is not waiting)`]);
   }
   await writeGoalRecord(opts.root, step.record);
-  const lines = [`wake ${token} accepted: ${opts.reason}`, `  status: ${step.record.status}`];
-  if (step.effects.some((e) => e.kind === 'nudge')) {
-    lines.push(`  deliver: herdr agent prompt <baton pane> — "${opts.reason}"`);
+  const lines = [`wake ${token} accepted: ${reason}`, `  status: ${step.record.status}`];
+  // An escalation carries a message too: a job that ended while the goal was `blocked` is news for
+  // the human who is the blocker, so it must reach them the same way a nudge does.
+  const nudge = step.effects.find((e) => e.kind === 'nudge' || e.kind === 'escalate');
+  if (nudge !== undefined) {
+    lines.push(...(opts.deliver ? await deliverNudge(step.record, nudge.message, opts.herdr ?? {}) : [
+      `  deliver: herdr agent prompt <baton pane> — "${reason}"`,
+    ]));
   }
   return ok(lines);
 }
@@ -356,6 +415,133 @@ export async function runGoalBaton(root: string, sessionPath: string, paneId?: s
     updatedAt: now,
   });
   return ok([`baton ${previous} → ${sessionPath}`]);
+}
+
+/**
+ * The baton identity a goal should record, taken from the environment the command runs in.
+ *
+ * Both values are already there when the command is run by anything that participates in the goal's
+ * runtime: pi exports its session file as `PI_SESSION_FILE`, and a herdr pane exports
+ * `HERDR_PANE_ID` (the decision that split runtime/mechanics/memory relies on panes inheriting
+ * `HERDR_ENV`). Reading them is what makes a goal *drivable without being asked*: the pane that must
+ * be woken is recorded when the goal is created, so L3 has an address to deliver to later — a goal
+ * created without one can only ever be recovered by a new run or the deadline.
+ *
+ * Explicit flags win, and an absent variable stays absent (`undefined`, not `''`): a goal created
+ * outside a pane must stay recognisably unclaimed rather than claim a holder named after nothing.
+ */
+export function identityFromEnv(env: NodeJS.ProcessEnv = process.env): { sessionPath?: string; paneId?: string } {
+  const sessionPath = env.PI_SESSION_FILE?.trim();
+  const paneId = env.HERDR_PANE_ID?.trim();
+  return {
+    ...(sessionPath ? { sessionPath } : {}),
+    ...(paneId ? { paneId } : {}),
+  };
+}
+
+export interface EngramCommandOptions {
+  env?: NodeJS.ProcessEnv;
+  /** The running CLI, used when neither `--engram` nor `ENGRAM_BIN` names one. */
+  argv1?: string;
+  /** `process.execPath`; a `tsc`-emitted CLI is not executable on its own. */
+  node?: string;
+  /** Injected in tests, so the emitted prefix is asserted without touching the filesystem. */
+  isExecutable?: (file: string) => Promise<boolean>;
+}
+
+export interface GoalUnitOptions extends EngramCommandOptions {
+  root: string;
+  id?: string;
+  /** `ExecStart` payload, verbatim. Required: engram schedules nothing, systemd runs the job. */
+  job: string;
+  /** Write the unit into `.ai/goal/<id>/` instead of printing it to stdout. */
+  write?: boolean;
+  /** Overrides the engram argv baked into the unit (tests, and installs that are not on PATH). */
+  engram?: string[];
+}
+
+/**
+ * Which engram the unit should call.
+ *
+ * An absolute path in every case, because a systemd user unit has no login `PATH` to find `engram`
+ * in; and a shebang is not enough, because `tsc` emits `build/src/cli.js` as `0644` — the unit would
+ * start, the job would run, and the wake would fail with `EACCES` while nothing looked broken.
+ */
+export async function resolveEngramCommand(opts: EngramCommandOptions = {}): Promise<string[]> {
+  const env = opts.env ?? process.env;
+  const explicit = env.ENGRAM_BIN?.trim();
+  if (explicit !== undefined && explicit !== '') return [explicit];
+  // Absolutised: the unit sets its own `WorkingDirectory`, so a CLI named as `build/src/cli.js`
+  // would resolve against the *goal's* project rather than the one that emitted the unit.
+  const argv1 = opts.argv1 ?? process.argv[1] ?? '';
+  if (argv1 === '') return ['engram'];
+  const bin = path.resolve(argv1);
+  const node = opts.node ?? process.execPath;
+  const canExec = await (opts.isExecutable ??
+    (async (file: string) => {
+      try {
+        await fs.access(file, constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }))(bin);
+  return engramCommand(bin, canExec, node);
+}
+
+/**
+ * Emit the systemd unit that runs a long job and wakes this goal when it exits (L3).
+ *
+ * `--write` is not the default on purpose: this command's normal output is a *file to read*, and a
+ * scaffolder that writes into a repository unasked is the kind of side effect the opt-in goal carrier
+ * already had to be taught not to have. When it does write, it writes inside `.ai/goal/<id>/` only,
+ * through the same symlink guard as every other write in the bank.
+ */
+export async function runGoalUnit(opts: GoalUnitOptions): Promise<GoalCliResult> {
+  const target = opts.id ?? (await activeGoal(opts.root))?.id;
+  if (target === undefined) return fail(['no active goal — engram goal new "<goal text>" first']);
+  const read = await readGoalRecord(opts.root, target);
+  if (read.record === null) return fail([`${target}: ${read.error ?? 'unreadable'}`]);
+
+  const job = opts.job.trim();
+  // A unit with an empty ExecStart is refused by systemd with a message about the unit, which reads
+  // as "engram emitted a broken file" rather than "you forgot the job".
+  if (job === '') return fail(['a unit needs the job to run: --job "<command>"']);
+
+  const env = opts.env ?? process.env;
+  const source = goalUnitSource({
+    id: target,
+    goal: read.record.goal,
+    root: opts.root,
+    job,
+    engram: opts.engram ?? (await resolveEngramCommand(opts)),
+    path: env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    reason: `goal unit ${target} exited`,
+  });
+
+  const unit = goalUnitName(target);
+  // `split` leaves an empty element after the file's trailing newline; printing it would add a blank
+  // line that `--write` does not put on disk, so the printed unit and the written one would differ.
+  if (opts.write !== true) return ok(source.split('\n').slice(0, -1));
+
+  const abs = path.join(goalDir(opts.root, target), unit);
+  if (!(await resolvesInsideRoot(opts.root, abs))) {
+    return fail([`refusing to write ${unit}: the path resolves outside ${opts.root}`]);
+  }
+  if (!(await writeFileGuarded(opts.root, abs, source))) {
+    return fail([`refusing to write ${unit} through a symlinked directory — nothing was modified`]);
+  }
+  const rel = path.relative(opts.root, abs);
+  return ok([
+    `wrote ${rel}`,
+    '',
+    'install it as a user unit (a symlink, so regenerating the unit is picked up):',
+    `  mkdir -p ~/.config/systemd/user`,
+    `  ln -sf ${abs} ~/.config/systemd/user/${unit}`,
+    '  systemctl --user daemon-reload',
+    `  systemctl --user start ${unit}`,
+    `  journalctl --user -u ${unit} -f`,
+  ]);
 }
 
 /**
