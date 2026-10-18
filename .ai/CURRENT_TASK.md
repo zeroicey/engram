@@ -1,6 +1,6 @@
 # Current task
 
-**Status:** 🟡 v0.4.0 built, not published · **Updated:** 2026-10-16
+**Status:** 🟡 v0.4.0 built, not published · **Updated:** 2026-10-18
 
 ## Goal
 
@@ -28,15 +28,28 @@ cannot hand-edit the machine-owned contract block.
 - [x] **v0.4.0: backwards compatibility as a test** — `aiContract()` is byte-identical to the v1
       block; `sync` on `research` reports `unchanged AGENTS.md`
 - [x] 147 tests green, `npm run typecheck` clean, `dump` inside budget
+- [x] **2026-10-18: `init` refuses outside a git repository** — entry precondition, exit 1, no
+      partial writes, `--dry-run` included, `.git` files (worktrees) accepted; 7 new tests, 154 green
+- [x] **2026-10-18: six decisions recorded** for the long-running-agent line (three-layer split,
+      `waiting` + self-wake, `done_when` shapes, project-scoped goal with one baton, git
+      prerequisite, goal engine folded into engram)
 - [ ] Publish `@zeroicey/engram@0.4.0` (the human runs `npm publish`: 2FA)
 - [ ] `research` has not declared `.ai/sections.json` yet — the mechanism is ready, they decide
+- [ ] **Goal engine (v0.5)**: host-free state machine + `goal_report` + continuation + wait latch,
+      pi adapter only, opt-in per project. Not started — the design round is closed, M1 is next.
 
 ## Code state
 
-Branch `main`. `src/` is 21 TypeScript modules, `test/` 8 suites, zero runtime deps. Build:
+Branch `main`. `src/` is 22 TypeScript modules, `test/` 9 suites, zero runtime deps. Build:
 `npm run build` → `build/`; tests run against compiled output on purpose. `engram dump` renders
 ~1.4 KB. Nine tool adapters: `agents`, `codex`, `claude`, `cursor`, `windsurf`, `copilot`, `gemini`,
 `pi`, `dsh`. Two new leaf modules this round: `src/core/sections.ts`, `src/core/skill-source.ts`.
+2026-10-18 added `src/core/git.ts` (upward `.git` lookup, no subprocess) and `test/git.test.ts`.
+
+The `init` precondition is a **command-level** check in `cmdInit`, not inside `runInit`: a refused
+init must not have touched the filesystem at all, and keeping it in the command handler makes that
+visible in one place. `test/helpers.ts` now creates a `.git` marker by default so every suite runs
+under the real precondition; `sandboxWithoutGit()` is the escape hatch for the refusal test.
 
 Layering held: `core/` imports nothing from `templates/`. `templates/contract.ts` declares
 `ContractRow` structurally and `core/sections.ts` produces that shape, so neither layer knows the
@@ -69,8 +82,14 @@ other's type.
 
 ## Next action
 
-Next action: publish 0.4.0, then let `research` declare `.ai/journal/` themselves — that is the
-acceptance test for this whole design, and it must be done by them, not by us.
+Next action, in order:
+
+1. **M1 of the goal engine** — a host-free state machine (`running` / `waiting` / `blocked` / `done`),
+   the single `goal_report` tool surface, continuation on `agent_settled`, and the wait latch. No
+   pi lifecycle code in `core/`; the adapter injects triggers. Read
+   `.ai/decisions/2026-10-18-fold-the-goal-engine-into-engram-instead-of-a-separate-packa.md` first.
+2. Publish 0.4.0 (**human**, 2FA), then let `research` declare `.ai/journal/` themselves — that is
+   the acceptance test for the extension surface, and it must be done by them, not by us.
 
 Candidate v0.5 work, in order of leverage:
 1. `engram doctor` — machine-checkable bank drift: dangling `.ai/` paths, sections whose `dir` no
