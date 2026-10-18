@@ -532,3 +532,56 @@ test('a wake that arrives while blocked is delivered as well as recorded', async
     await sb.cleanup();
   }
 });
+
+test('a stale pane id falls back to the session path, which is the identity engram owns', async () => {
+  // Ids are stable across *renames* — verified against herdr: renaming a tab or a workspace changes only
+  // its label, and the old id keeps resolving. But the pane a goal recorded at creation belongs to a
+  // runtime that may have restarted since, and herdr's numbering is not a promise engram can lean on. So
+  // the id is the fast path and the session path is the fallback identity.
+  const { sb, id } = await goalSandbox();
+  try {
+    await latchWait(sb, id, { sessionPath: '/sessions/mine.jsonl', paneId: 'w13:p9' });
+    const calls: string[][] = [];
+    const r = await runGoalWake({
+      root: sb.root,
+      id,
+      reason: 'training exited',
+      deliver: true,
+      herdr: {
+        run: async (argv) => {
+          calls.push(argv);
+          // The recorded pane is gone, as it is after the runtime that issued it restarted.
+          if (argv[0] === 'agent' && argv[1] === 'prompt') {
+            return argv[2] === 'w13:p9'
+              ? { status: 0, stdout: '{"error":{"code":"pane_not_found"}}', error: null }
+              : { status: 0, stdout: '{"result":{}}', error: null };
+          }
+          // `agent list` knows the session file, so the address is recoverable.
+          if (argv[0] === 'agent' && argv[1] === 'list') {
+            return {
+              status: 0,
+              stdout: JSON.stringify({
+                result: { agents: [{ pane_id: 'w13:p1', agent_session: { value: '/sessions/mine.jsonl' } }] },
+              }),
+              error: null,
+            };
+          }
+          return { status: 0, stdout: '{"result":{}}', error: null };
+        },
+      },
+    });
+
+    assert.equal(r.exitCode, 0, r.lines.join('\n'));
+    assert.deepEqual(
+      calls.map((c) => c.slice(0, 2).join(' ')),
+      ['agent prompt', 'agent list', 'agent prompt'],
+      'the recorded pane is tried first, then the session path, then delivery',
+    );
+    assert.equal(calls[2]?.[2], 'w13:p1', 'the retry goes to the pane the session file resolves to');
+    assert.match(r.lines.join('\n'), /retried through resolved \/sessions\/mine\.jsonl → w13:p1/);
+    const after = await readGoalRecord(sb.root, id);
+    assert.equal(after.record?.status, 'running', 'and only then is the wake consumed');
+  } finally {
+    await sb.cleanup();
+  }
+});

@@ -87,6 +87,38 @@ window in another project's space.
   "focused workspace" — focus is a human's click, not a property of the goal.
 - Do not open a probe window in a space you do not own; close every window you open while testing.
 
+## Address herdr by ID, never by name (hard)
+
+Labels are for humans and change at any time — an auto-updating tab renames itself, a space gets
+renamed, a pane's title follows whatever runs in it. Address everything by the identifier herdr
+issues, and treat every label as display-only:
+
+| Use this | Never this |
+| --- | --- |
+| `workspace_id` (`w13`) | workspace `label` / `number` |
+| `tab_id` (`w13:t1`) | tab `label` / `number` |
+| `pane_id` (`w13:p2`) | pane `label` / `terminal_title` |
+| `agent_session.value` (the session file path) | the agent `name` |
+
+What survives a herdr **server restart** was measured on hpstation with herdr 0.8.2 — server stopped,
+started again as a headless process, `persist.restore outcome="ok"` in the log:
+
+| Field | Before → after | |
+| --- | --- | --- |
+| `workspace_id` | `w4` → `w4` | stable |
+| `tab_id` | `w4:t1` → `w4:t1` | stable |
+| `pane_id` | `w4:p1` → `w4:p1` | stable |
+| `terminal_id` | `term_65e1f20c…` → `term_65e1f2cb…` | **changes on every spawn** |
+| `revision` | `0` → `1` | a counter, not an identity |
+
+The structure survives; **the process inside the pane does not** — the restored pane held a fresh shell,
+and the agent that had been running was gone. So `pane_id` is a durable address for a *container*, and
+`agent_session.value` is the address for an *agent*. Anything that must reach an agent needs both, tried
+in that order; anything that must reach a *place* may use the pane id alone. Renames are safe either way
+(`tab rename` / `workspace rename` change only the label and the ids keep resolving), and a closed pane
+answers `pane_not_found`, so an id is a real handle rather than a name lookup. Tab *numbers* are the least
+stable of all — they shift when another tab closes.
+
 <!-- engram:managed -->
 
 <!-- engram:contract:start v1 -->

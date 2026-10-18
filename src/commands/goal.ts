@@ -325,6 +325,19 @@ export interface GoalWakeOptions {
  * pane recorded when the goal was created may be long gone, and the current holder's address is the
  * only one worth using.
  *
+ * **Two identities, tried in order, because a pane is a container and the agent is not.** A `pane_id`
+ * *is* durable across a herdr server restart — measured on hpstation with herdr 0.8.2: the server was
+ * stopped and started again, `persist.restore` reported `outcome="ok"`, and `w4:p1` still resolved to
+ * the same tab and workspace. What did **not** survive is the process inside it: the pane came back
+ * holding a fresh shell, so a recorded pane id no longer implies that an agent is there. Two fields
+ * that look like identities are not: `terminal_id` changes on every spawn (`term_65e1f20c171f04` →
+ * `term_65e1f2cb36f9f2`) and `revision` is a counter.
+ *
+ * So the retry is not about renumbering. It is that the baton's **session file path** is the only handle
+ * that names an *agent* rather than a place — `herdr agent list` maps it to whatever pane that session is
+ * in now — and a wake addressed to a pane whose agent is gone would otherwise be reported as delivered
+ * into a shell. The id is the fast path; the session path is the identity engram owns.
+ *
  * A failure is reported loudly and is never a lost wake, because the **caller** writes the record only
  * after this returns `ok`. That ordering is the whole guarantee and it was once the other way round:
  * the transition was persisted first, so a failed delivery left a `running` goal with no latched token
@@ -336,20 +349,36 @@ async function deliverNudge(
   message: string,
   deps: HerdrDeps,
 ): Promise<{ ok: boolean; lines: string[] }> {
-  let pane = record.baton?.paneId ?? null;
-  if (pane === null) {
-    const sessionPath = record.baton?.sessionPath;
-    if (sessionPath === undefined) {
-      return { ok: false, lines: ['  deliver: NOT DELIVERED — the goal has no baton holder, so there is no pane to wake'] };
-    }
-    const resolved = await paneForSessionPath(sessionPath, deps);
-    if (resolved.pane === null) return { ok: false, lines: [`  deliver: NOT DELIVERED — ${resolved.detail}`] };
-    pane = resolved.pane;
+  const sessionPath = record.baton?.sessionPath;
+  const recorded = record.baton?.paneId ?? null;
+  if (recorded === null && sessionPath === undefined) {
+    return { ok: false, lines: ['  deliver: NOT DELIVERED — the goal has no baton holder, so there is no pane to wake'] };
   }
-  const res = await promptPane(pane, message, deps);
+
+  const lines: string[] = [];
+  if (recorded !== null) {
+    const res = await promptPane(recorded, message, deps);
+    if (res.ok) return { ok: true, lines: [`  deliver: ${res.detail}`] };
+    lines.push(`  deliver: ${recorded} did not accept the prompt — ${res.detail}`);
+    if (sessionPath === undefined) {
+      return { ok: false, lines: [`  deliver: NOT DELIVERED — ${res.detail}`] };
+    }
+  }
+
+  // The recorded pane is absent or stale. The session path is the fallback, and it is also the only
+  // path when the baton was recorded without a pane (a goal created outside herdr).
+  const resolved = await paneForSessionPath(sessionPath as string, deps);
+  if (resolved.pane === null) {
+    return { ok: false, lines: [...lines, `  deliver: NOT DELIVERED — ${resolved.detail}`] };
+  }
+  const retry = await promptPane(resolved.pane, message, deps);
   return {
-    ok: res.ok,
-    lines: [res.ok ? `  deliver: ${res.detail}` : `  deliver: NOT DELIVERED — ${res.detail}`],
+    ok: retry.ok,
+    lines: [
+      ...lines,
+      `  deliver: retried through ${resolved.detail}`,
+      retry.ok ? `  deliver: ${retry.detail}` : `  deliver: NOT DELIVERED — ${retry.detail}`,
+    ],
   };
 }
 

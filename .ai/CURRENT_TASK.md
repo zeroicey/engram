@@ -2,10 +2,11 @@
 
 **Status:** 🟡 Pi-only (0.5.0, unpublished) · goal engine M1–M4 done; L1+L2+L3 wake transports live; **handoff opens a window in this space** · **Updated:** 2026-10-18
 
-> **两套「当前任务」的边界**：本文是**项目的位置**（durable）；`.ai/goal/<id>/` 是**当前这一轮的合约**（有
-> `done_when`、由机器判定、结束后归档）。`dump` 里前者渲染为 `project:`、后者渲染为 `GOAL / run:`。
-> 一个 goal 只服务于本文 checklist 里的某一项（可以是研究、开发、或一个任务表的条目）。见
-> `.ai/decisions/2026-10-18-the-goal-is-a-slice-of-the-project-not-a-second-current-task.md`。
+> **目标与 CURRENT_TASK 的边界**：一个 goal 是**带机器判据的目标**（大小任意——「把 mAP 训练到 ≥0.85」就是
+> 一等公民）；本文是**这场追求的处境**，没有判据、永不「完成」。目标只声明一次（由 goal 声明）；计划在任何
+> 时刻只存在一个地方（有 goal 时是它的 `TASKS.md`，没有时是本文的 `Next action`）。`dump` 里分别渲染为
+> `project:` 与 `GOAL / run:`。见
+> `.ai/decisions/2026-10-18-a-goal-is-a-judged-objective-current-task-is-the-projects-position.md`。
 
 ## Goal
 
@@ -183,6 +184,10 @@ other's type.
    while `pendingHandoff` is set, so a baton transfer that does not retire it leaves the successor
    never-nudged and escalates "requested but never taken" about a handoff that landed. Ask of any
    `pending*` field: which transition retires it, on every path?
+- `.ai/pitfalls/cases/terminal-id-looks-like-an-id-and-is-not.md` — label / 结构 ID / 进程句柄有三种不同的
+  生存期。实测（hpstation，herdr 0.8.2）：server 重启后 `workspace_id`/`tab_id`/`pane_id` 全部恢复，而
+  `terminal_id` 每次都变；pane 回来了，里面的进程没有。凡是要到达「agent」的寻址都需要第二个身份
+  （session 文件路径）。
 - `.ai/pitfalls/cases/a-handoff-landed-in-the-focused-space.md` — anything that opens a window and depends
   on where the human's focus is will eventually act in the wrong project. The successor's space has three
   sources and a refusal, never a default.
