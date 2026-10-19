@@ -86,8 +86,19 @@ export async function workingTreeDigest(root: string, maxEntries = 20_000): Prom
   const parts: string[] = [head ?? 'no-head'];
   const IGNORED = new Set(['.git', 'node_modules', 'dist', 'build', 'out', 'target', 'coverage', '__pycache__', '.venv', 'venv']);
 
+  // Set when the walk gave up on part of the tree. A truncated digest is not a digest: leaving it to be
+  // compared as if it covered everything means an edit outside the sampled subset reads as "nothing
+  // changed", and a *productive* goal gets declared stuck. Returning `null` (the reducer's "host cannot
+  // see a working tree") is the honest answer — it is bounded by the stuck ceiling since round 3, so it
+  // still escalates rather than looking healthy forever. Measured: `workingTreeDigest(root, 5)` on this
+  // repository returned the same digest twice while ignoring most of it.
+  let truncated = false;
+
   const walk = async (dir: string, depth: number): Promise<void> => {
-    if (parts.length > maxEntries || depth > 12) return;
+    if (parts.length > maxEntries || depth > 12) {
+      truncated = true;
+      return;
+    }
     let entries: import('node:fs').Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
@@ -95,7 +106,10 @@ export async function workingTreeDigest(root: string, maxEntries = 20_000): Prom
       return;
     }
     for (const e of entries) {
-      if (parts.length > maxEntries) return;
+      if (parts.length > maxEntries) {
+        truncated = true;
+        return;
+      }
       if (e.name.startsWith('.') && e.name !== '.ai') continue;
       if (IGNORED.has(e.name)) continue;
       const full = path.join(dir, e.name);
@@ -135,6 +149,7 @@ export async function workingTreeDigest(root: string, maxEntries = 20_000): Prom
   };
 
   await walk(repositoryRoot, 0);
+  if (truncated) return null;
   parts.sort();
   // A short, stable fingerprint: the detector only compares digests, it never parses one.
   return `${parts.length}:${hash(parts.join('\n'))}`;

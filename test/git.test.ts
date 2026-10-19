@@ -114,6 +114,23 @@ test('the working-tree digest cannot be moved by a no-op touch', async (t) => {
   assert.notEqual(await workingTreeDigest(sb.root), first, 'an equal-length edit is progress');
 });
 
+test('a truncated walk reports unknown, not unchanged', async (t) => {
+  // Past `maxEntries` or the depth cap the walk silently stopped, and the digest it returned was compared
+  // as though it covered the whole tree. An edit outside the sampled subset then read as "nothing
+  // changed", so a *productive* goal would be declared stuck. Measured: `workingTreeDigest(root, 5)` on
+  // this repository returned the same digest twice while ignoring most of it.
+  //
+  // `null` is the reducer's "the host cannot see a working tree", and since round 3 that is bounded by the
+  // stuck ceiling rather than looking healthy forever — so "unknown" escalates instead of lying.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await makeRepo(sb, 'directory');
+  for (let i = 0; i < 10; i++) await sb.write(`f${i}.txt`, `content ${i}`);
+
+  assert.equal(await workingTreeDigest(sb.root, 3), null, 'a capped walk must not report a digest');
+  assert.notEqual(await workingTreeDigest(sb.root, 20_000), null, 'an uncapped walk still works');
+});
+
 test('the working-tree digest ignores the engine own bookkeeping', async (t) => {
   // `.ai/goal` is rewritten by the very transition that reads the digest, so including it pinned
   // `unchangedRounds` at 0 in production while the tests (which inject a literal digest) stayed green.

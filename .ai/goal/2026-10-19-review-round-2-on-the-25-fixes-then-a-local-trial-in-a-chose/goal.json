@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "2026-10-19-review-round-2-on-the-25-fixes-then-a-local-trial-in-a-chose",
+  "goal": "Review round 2 on the 25 fixes, then a local trial in a chosen repo, then push (no publish, no tag)",
+  "status": "done",
+  "baton": {
+    "sessionPath": "/home/oicey/.pi/agent/sessions/--data-dev-engram--/2026-10-19T07-41-21-205Z_01a1531b-9db5-76da-b6f0-b71601ed8540.jsonl",
+    "paneId": "w13:pE",
+    "startedAt": "2026-10-19T08:14:33.013Z"
+  },
+  "createdAt": "2026-10-19T07:40:27.238Z",
+  "updatedAt": "2026-10-19T08:30:13.517Z",
+  "closedAt": "2026-10-19T08:30:13.517Z",
+  "closeReason": "completed",
+  "rounds": 1,
+  "reports": 6,
+  "wake": null,
+  "wakeSeq": 3,
+  "lastDigest": "136:b772b83c",
+  "unchangedRounds": 0,
+  "unreportedSettles": 1,
+  "blocker": null,
+  "lastNote": "Predecessor's message repeated advice I had already applied; killed round 2b (it was on the identical trajectory: 6 children, zero output files at 8min). KEY DISCOVERY the predecessor missed: the reviewer agent has NO write tool (read,grep,find,ls,watchdog_diff), so 'write findings incrementally' is a no-op for it — that is why neither round could ever land output. Switched to scout (read,grep,find,ls,bash,write), one file per child, incremental appends to /tmp/engram-r2-review/*.md, 20-call budget, no line numbers. Round 3 = b9c33beb, 6 children. BEFORE relaunching I salvaged the four dead transcripts: 5.6MB of thinking blocks contained the findings, and verifying them produced two real fixes: f25fe1d (subagent pane-inheritance baton steal) and 5c3f4e9 (onSettled's unbounded new Date(claimedMs + limits.livenessMs) -> RangeError escaping a total reducer; also separated 'unparseable claimedAt = stale' from 'unrepresentable deadline = not stale' so a livenessMs of 'never expire' cannot invert into immediate escalation). 353 tests green, tsc clean, sync clean, doctor healthy. Pitfall recorded: a-review-that-never-writes-until-the-end-loses-everything.",
+  "pendingVerdict": null,
+  "lastVerdict": {
+    "passed": true,
+    "detail": "1 command(s) exited 0",
+    "at": "2026-10-19T08:30:13.517Z"
+  },
+  "pendingHandoff": null,
+  "pendingWakes": []
+}
