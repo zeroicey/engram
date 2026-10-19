@@ -2,11 +2,14 @@ export { TOOLS, getTool, ruleFiles, allSinkDirs, RETIRED_SINK_DIRS, RETIRED_RULE
 export type { RuleFileDef, SkillSink, ToolDef } from './adapters/index.js';
 export { runInit, runSync, aiSkeleton, materializeSkillSinks, contractExtensions } from './commands/init.js';
 export { runDump, renderDump } from './commands/dump.js';
+export { runDoctor, ARCHIVE_REL } from './commands/doctor.js';
+export type { DoctorOptions, DoctorResult } from './commands/doctor.js';
 export { runNew, runNewSection, renderNewFile, isMemoryKind } from './commands/new.js';
 export type { MemoryKind, NewSectionOptions } from './commands/new.js';
-export { loadMemory, parseCurrentTask } from './core/memory.js';
+export { loadMemory, parseCurrentTask, compactCurrentTask, ARCHIVE_PATH, POINTER_PREFIX } from './core/memory.js';
+export type { CompactResult, CurrentTask } from './core/memory.js';
 export { buildFingerprint } from './core/fingerprint.js';
-export type { Fingerprint, FingerprintOptions } from './core/fingerprint.js';
+export type { Dropped, Fingerprint, FingerprintOptions } from './core/fingerprint.js';
 export { readSections, parseSections, sectionTarget, sectionFileName, SECTIONS_PATH } from './core/sections.js';
 export type { CustomSection, SectionsResult } from './core/sections.js';
 export { readSkillSources, parseSkillFile } from './core/skill-source.js';
@@ -67,27 +70,60 @@ export {
   runGoalCheck,
   runGoalClose,
   runGoalEvent,
+  runGoalHandoff,
   runGoalList,
   runGoalNew,
   runGoalReport,
   runGoalStatus,
+  runGoalUnit,
   runGoalWake,
+  successorLabel,
+  successorWorkspace,
   writeGoalReportFile,
 } from './commands/goal.js';
-export type { GoalCliResult, GoalNewOptions, GoalWakeOptions, HostEventInput } from './commands/goal.js';
+export type {
+  GoalCliResult,
+  GoalHandoffOptions,
+  GoalNewOptions,
+  GoalUnitOptions,
+  GoalWakeOptions,
+  HostEventInput,
+} from './commands/goal.js';
 export { goalBrief, goalTasks } from './templates/goal-files.js';
 export type { GoalBriefContext } from './templates/goal-files.js';
 export {
+  engramCommand,
+  goalUnitName,
+  goalUnitSource,
+  GOAL_UNIT_HEADER,
+  systemdWord,
+  unitOutcome,
+} from './templates/systemd.js';
+export type { GoalUnitContext } from './templates/systemd.js';
+export {
+  EFFECT_DISPOSITIONS,
+  HOST_ACTION_EFFECTS,
   idleResponse,
   parseReportArgs,
   responseFromEffects,
 } from './core/goal-host.js';
+export type { EffectDisposition } from './core/goal-host.js';
 export type { GoalResponse, ParsedReport, ReportArgs } from './core/goal-host.js';
 export { goalExtensionSource, GOAL_EXTENSION_HEADER, GOAL_EXTENSION_PATH } from './templates/goal-extension.js';
 export type { GoalExtensionContext } from './templates/goal-extension.js';
 export { syncGoalCarrier } from './commands/goal-carrier.js';
 export type { GoalCarrierAction, GoalCarrierResult } from './commands/goal-carrier.js';
-export { goalEnabled } from './core/config.js';
+export {
+  CONFIG_PATH,
+  goalEnabled,
+  isLegacyConfig,
+  readConfig,
+  setGoalEnabled,
+  writeConfig,
+} from './core/config.js';
+export type { EngramConfig, LimitKey } from './core/config.js';
+export { hasErrors, runChecks, tally, CURRENT_TASK_WARN_LINES } from './core/doctor.js';
+export type { Finding, Severity } from './core/doctor.js';
 export { VERSION } from './version.js';
 export type { ChecklistItem, CommandResult, DoneVerdict, EvalCheck, EvalDeps } from './core/goal-eval.js';
 export { detectProject } from './core/project.js';
