@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import { test } from 'node:test';
+import path from 'node:path';
 import { materializeSkillSinks, runInit, runSync } from '../src/commands/init.js';
 import { TOOLS } from '../src/adapters/index.js';
 import { readSkillSources } from '../src/core/skill-source.js';
@@ -404,6 +405,73 @@ test('a re-run of init never rewrites the config it does not own', async (t) => 
   // And the carrier it protects is still there after the sync that follows.
   await runSync(sb.root);
   assert.equal(await sb.exists('.pi/extensions/engram-goal.ts'), true, 'a re-init must not disarm the goal engine');
+});
+
+test('init does not write through a dangling symlink out of the project', async (t) => {
+  // `writeOnce`/`writeNeverClobber`/`writeGenerated` wrote with a raw `fs.writeFile`, which FOLLOWS a
+  // symlink. `pathExists` uses `fs.stat`, which also follows and therefore reports `false` for a
+  // *dangling* link — so the "create it" branch fired and the file was created at the external target.
+  // Measured: `ln -s /tmp/outside/pwned.json .engram/config.json; engram init` created
+  // `/tmp/outside/pwned.json`. `writeFileGuarded` already existed for the skill carriers; a guarded
+  // writer next to an unguarded one is half a fix.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  const outside = path.join(sb.root, '..', `engram-outside-${process.pid}`);
+  await fs.mkdir(outside, { recursive: true });
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+
+  await sb.write('.ai/CURRENT_TASK.md', '# T\n\n**Status:** x\n\n## Goal\n\ng\n');
+  await fs.mkdir(path.join(sb.root, '.engram'), { recursive: true });
+  await fs.symlink(path.join(outside, 'pwned.json'), path.join(sb.root, '.engram', 'config.json'));
+
+  await runInit({ root: sb.root });
+
+  assert.deepEqual(await fs.readdir(outside), [], 'nothing may be written outside the project');
+  const st = await fs.lstat(path.join(sb.root, '.engram', 'config.json'));
+  assert.equal(st.isSymbolicLink(), false, 'the stale link is replaced with a real file');
+  assert.match(await sb.read('.engram/config.json'), /"version": 2/);
+});
+
+test('a config that exists but cannot be parsed is not an opt-out', async (t) => {
+  // `readConfig` collapses "absent" and "unreadable" into `null`, and `sync` acted on that collapse by
+  // DELETING the goal carrier. Measured: enabling the goal engine, then truncating
+  // `.engram/config.json` to `{"version":2,"goal":{"enabled":true},`, made the next `engram sync` print
+  // `removed .pi/extensions/engram-goal.ts (goal disabled)` — silently disarming an engine the project
+  // had explicitly enabled, with the project never having opted out. Same class as the round-1 P0
+  // (a second `init` disarmed it), reached by corruption instead of by a re-run.
+  //
+  // A damaged opt-in must be reported and left alone; a *genuine* opt-out must still remove the carrier.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await runInit({ root: sb.root });
+  await sb.write('.engram/config.json', JSON.stringify({ version: 2, goal: { enabled: true } }));
+  await runSync(sb.root);
+  assert.equal(await sb.exists('.pi/extensions/engram-goal.ts'), true);
+
+  // Corrupt it. The carrier must survive, and the warning must say why.
+  await sb.write('.engram/config.json', '{"version":2,"goal":{"enabled":true},');
+  const res = await runSync(sb.root);
+  assert.equal(
+    await sb.exists('.pi/extensions/engram-goal.ts'),
+    true,
+    'a broken config must not disarm the goal engine',
+  );
+  assert.ok(
+    (res.warnings ?? []).some((w) => /unreadable/i.test(w)),
+    `sync must say the config is unreadable: ${JSON.stringify(res.warnings)}`,
+  );
+
+  // Repairing it keeps the carrier; a real opt-out still removes it.
+  await sb.write('.engram/config.json', JSON.stringify({ version: 2, goal: { enabled: true } }));
+  await runSync(sb.root);
+  assert.equal(await sb.exists('.pi/extensions/engram-goal.ts'), true, 'repair preserves the carrier');
+  await sb.write('.engram/config.json', JSON.stringify({ version: 2 }));
+  await runSync(sb.root);
+  assert.equal(
+    await sb.exists('.pi/extensions/engram-goal.ts'),
+    false,
+    'an explicit opt-out must still remove the carrier',
+  );
 });
 
 test('the legacy-config upgrade keeps the limits block', async (t) => {

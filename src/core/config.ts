@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { readFileSafe, writeFile } from './project.js';
+import { readFileSafe, readIfPresent, writeFile } from './project.js';
 
 /**
  * `.engram/config.json` — project-local settings.
@@ -96,6 +96,37 @@ export function goalEnabled(config: EngramConfig | null): boolean {
 
 export async function readConfig(root: string): Promise<EngramConfig | null> {
   return parseConfig(await readFileSafe(path.join(root, CONFIG_PATH)));
+}
+
+/** A config read that keeps "absent" and "unreadable/broken" apart. */
+export interface ConfigRead {
+  /** Parsed config, or `null` when the file is absent or unusable. */
+  config: EngramConfig | null;
+  /** True when a config file EXISTS on disk but could not be read or parsed. */
+  broken: boolean;
+  /** Human-readable reason, when `broken`. */
+  error: string | null;
+}
+
+/**
+ * Read the config, distinguishing "this project never opted in" from "I could not read the opt-in".
+ *
+ * `readConfig` collapses both into `null`, and `sync` acted on that collapse by **deleting the goal
+ * carrier**. Measured: truncate `.engram/config.json` to `{"version":2,"goal":{"enabled":true},` and the
+ * next `engram sync` printed `removed .pi/extensions/engram-goal.ts (goal disabled)` — silently disarming
+ * the engine the project had enabled, exactly the class of the round-1 P0 ("init disarmed the goal
+ * engine"), reached by corruption instead of by a second `init`. A file that exists and cannot be parsed
+ * is not an opt-out; it is a damaged opt-in, and the only safe move is to say so and change nothing.
+ */
+export async function readConfigDetailed(root: string): Promise<ConfigRead> {
+  const read = await readIfPresent(path.join(root, CONFIG_PATH));
+  if (read.error !== null) return { config: null, broken: true, error: read.error };
+  if (read.text === null) return { config: null, broken: false, error: null };
+  const config = parseConfig(read.text);
+  if (config === null) {
+    return { config: null, broken: true, error: `${CONFIG_PATH}: not a usable engram config` };
+  }
+  return { config, broken: false, error: null };
 }
 
 /**

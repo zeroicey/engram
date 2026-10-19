@@ -17,7 +17,8 @@ import { TOOLS, ruleFiles, RETIRED_RULE_FILES, type ToolDef } from '../adapters/
 import { commandNameFor, materialize } from '../adapters/skills.js';
 import { pruneStaleCarriers } from './prune-carriers.js';
 import { syncGoalCarrier, type GoalCarrierResult } from './goal-carrier.js';
-import { CONFIG_PATH, goalEnabled, isLegacyConfig, readConfig, writeConfig } from '../core/config.js';
+import { GOAL_EXTENSION_PATH } from '../templates/goal-extension.js';
+import { CONFIG_PATH, goalEnabled, isLegacyConfig, readConfig, readConfigDetailed, writeConfig } from '../core/config.js';
 import { VERSION } from '../version.js';
 import { CONTEXT_REMINDER_PERCENT } from '../core/goal.js';
 import { renderRuleFile, refreshContract } from '../adapters/rules.js';
@@ -88,7 +89,7 @@ async function writeNeverClobber(
   // `readFileSafe` swallows EISDIR, so a *directory* at this path read as "absent" and the report
   // said `created` for a file that was never written. A false success is worse than a refusal.
   if (await isDir(abs)) return 'skipped';
-  if (!dryRun) await writeIfMissing(abs, content);
+  if (!dryRun) return (await writeFileGuarded(root, abs, content)) ? 'created' : 'skipped';
   return 'created';
 }
 
@@ -110,7 +111,12 @@ async function writeOnce(
   if (await isDir(abs)) return 'skipped';
   if (await pathExists(abs)) return 'kept';
   if (dryRun) return 'created';
-  await writeIfMissing(abs, content);
+  // Guarded, not raw. `pathExists` uses `fs.stat`, which FOLLOWS a symlink and reports `false` for a
+  // *dangling* one — so this branch then wrote through the link and created the file at the external
+  // target. Measured: `ln -s /tmp/outside/pwned.json .engram/config.json; engram init` created
+  // `/tmp/outside/pwned.json`. The same escape `writeFileGuarded` was written for on the skill carriers,
+  // applied there and not here — a guarded writer next to an unguarded one is half a fix.
+  if (!(await writeFileGuarded(root, abs, content))) return 'skipped';
   return 'created';
 }
 
@@ -124,13 +130,12 @@ async function writeGenerated(
   const existing = await readFileSafe(abs);
   if (await isDir(abs)) return 'skipped';
   if (dryRun) return existing === null ? 'created' : existing === content ? 'kept' : 'updated';
-  if (existing === null) {
-    await writeIfMissing(abs, content);
-    return 'created';
-  }
-  if (existing === content) return 'kept';
-  await writeFile(abs, content);
-  return 'updated';
+  // Every write here goes through the guarded writer, both the create and the replace branch. A raw
+  // `fs.writeFile` follows a symlink, so an unguarded replace next to a guarded create would still let a
+  // symlinked rule file overwrite something outside `--root` — the shape that shipped once already.
+  if (existing !== null && existing === content) return 'kept';
+  if (!(await writeFileGuarded(root, abs, content))) return 'skipped';
+  return existing === null ? 'created' : 'updated';
 }
 
 export async function runInit(opts: InitOptions): Promise<InitResult> {
@@ -366,13 +371,27 @@ export async function runSync(root: string, dryRun = false): Promise<SyncResult>
   else if (!authoritative) warnings.push(`Cannot read ${SKILLS_DIR}/ — carriers left alone (pruning needs a readable source of truth).`);
   // The goal engine is opt-in: it runs code at every settlement boundary, so it is a separate
   // consent from tool support — which, being Pi-only, is no longer a consent at all.
-  const wantsGoal = goalEnabled(await readConfig(root));
-  const goalCarrier = await syncGoalCarrier(
-    root,
-    wantsGoal,
-    { engramBin: 'engram', version: VERSION, reminderPercent: CONTEXT_REMINDER_PERCENT },
-    dryRun,
-  );
+  // A config that exists but cannot be parsed is **not** an opt-out. `readConfig` collapses absent and
+  // broken into `null`, and acting on that collapse DELETED the carrier: measured, truncating
+  // `.engram/config.json` to `{"version":2,"goal":{"enabled":true},` made the next `sync` print
+  // `removed .pi/extensions/engram-goal.ts (goal disabled)` — silently disarming an engine the project
+  // had enabled. Same class as the round-1 P0, reached by corruption instead of by a second `init`.
+  // Refuse to change the carrier and say why; the project decides whether to repair the file.
+  const goalConfig = await readConfigDetailed(root);
+  const wantsGoal = goalEnabled(goalConfig.config);
+  const goalCarrier = goalConfig.broken
+    ? {
+        action: 'unchanged' as const,
+        path: GOAL_EXTENSION_PATH,
+        planned: false,
+        note: `config is unreadable (${goalConfig.error ?? 'unknown error'}) — the goal carrier was left exactly as it is. Repair ${CONFIG_PATH} to change it.`,
+      }
+    : await syncGoalCarrier(
+        root,
+        wantsGoal,
+        { engramBin: 'engram', version: VERSION, reminderPercent: CONTEXT_REMINDER_PERCENT },
+        dryRun,
+      );
   if (goalCarrier.note) warnings.push(`${goalCarrier.path}: ${goalCarrier.note}`);
 
   // Rule files left behind by a removed adapter are reported, not deleted: `init` preserves whatever
