@@ -147,10 +147,10 @@ is what lets a project like `research` own its own partitions while this is buil
 
 ## Code state
 
-Branch `main`. `src/` is 33 TypeScript modules, `test/` 15 suites, 304 tests, zero runtime deps.
+Branch `main`. `src/` is 33 TypeScript modules, `test/` 16 suites, 321 tests, zero runtime deps.
 Build: `npm run build` → `build/`; tests run against compiled output on purpose. `engram dump`
-renders ≥1247 B here (budget 1500) with the active goal, so the elastic content still fits — close a
-goal before measuring. **One tool adapter: `pi`.** The config is v2 (`goal` opt-in only, now `on` in
+renders 1414 B here (budget 1500) with the active goal, so the elastic content still fits — but the
+headroom is 86 B, and a long `done_when` or a second blocker would not fit. **One tool adapter: `pi`.** The config is v2 (`goal` opt-in only, now `on` in
 this repo) and `core/config.ts` no longer imports `adapters/`, so the layering allowlist is down to a
 single entry. 2026-10-18 added two leaf modules: `src/templates/systemd.ts`
 (the unit, a pure string) and `src/core/herdr.ts` (the delivery hop, all I/O injectable). `core/` now
