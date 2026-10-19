@@ -92,6 +92,12 @@ export async function workingTreeDigest(root: string, maxEntries = 20_000): Prom
       if (IGNORED.has(e.name)) continue;
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
+        // The engine's own bookkeeping is not evidence of progress, and it is rewritten by the very
+        // transition that reads this digest — so including it pinned the no-progress detector at
+        // `unchangedRounds: 0` in production, while the tests (which inject a literal digest) stayed
+        // green. Measured: two consecutive digests with nothing but a `writeGoalRecord` between them
+        // differed on every run, because `goal.json` carries the record's own `updatedAt`.
+        if (path.relative(repositoryRoot, full) === path.join('.ai', 'goal')) continue;
         await walk(full, depth + 1);
         continue;
       }

@@ -15,6 +15,15 @@ export interface FingerprintOptions {
   pitfalls?: number;
   /** Project label shown in the header. */
   projectName?: string;
+  /**
+   * Bank paths that exist but could not be read.
+   *
+   * Carried into the fingerprint because the artefact is the thing that gets pasted into a session, and
+   * its reader never sees stderr. Without it, an unreadable `.ai/decisions/` rendered as "a project with
+   * no binding decisions" in the pasted digest *and* in `--json`, so `--out fp.json` and the `/audit`
+   * consumer both saw a complete-looking document.
+   */
+  readErrors?: string[];
 }
 export interface Fingerprint {
   markdown: string;
@@ -53,6 +62,8 @@ export interface Fingerprint {
     bytes: number;
     truncated: boolean;
     dropped: Dropped[];
+    /** Bank paths that could not be read; non-empty means the document above is partial. */
+    readErrors: string[];
   };
 }
 
@@ -86,7 +97,12 @@ const MARK = { ACCEPTED: '✅', PROPOSAL: '💭', REJECTED: '🪦', UNKNOWN: '·
  */
 export const trimTo = (s: string, maxBytes: number): string => {
   if (Buffer.byteLength(s, 'utf8') <= maxBytes) return s;
-  const limit = Math.max(1, maxBytes - Buffer.byteLength('…', 'utf8'));
+  // `Math.max(0, …)`, not `1`: the old floor made `trimTo('abcd', 2)` return `'a…'` — four bytes for a
+  // two-byte budget. Not reachable from `dump` (every call site passes ≥ 60), but the helper is exported
+  // and directly asserted, so its own contract has to hold.
+  const marker = Buffer.byteLength('…', 'utf8');
+  if (maxBytes <= marker) return '';
+  const limit = maxBytes - marker;
   let out = '';
   let used = 0;
   for (const ch of s) {
@@ -137,6 +153,11 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
 
   const now: string[] = [];
   if (t?.status) now.push(line('state', t.status));
+  // Named second, for the same reason as `missing:` below: a tightening budget shortens NOW from the
+  // tail, and a warning that the digest is *partial* must not be the first thing evicted.
+  if (opts.readErrors?.length) {
+    now.push(line('unreadable', `${opts.readErrors.length} path(s) — the rest of this digest is partial`, 100));
+  }
   // Say what is absent, instead of rendering a thinner digest that looks complete.
   //
   // Three of the seven repositories that adopted the bank have no `## Goal` / `## Next action` /
@@ -291,6 +312,7 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
       bytes,
       truncated: fitted.truncated,
       dropped: fitted.dropped,
+      readErrors: opts.readErrors ?? [],
     },
   };
 }
@@ -346,22 +368,24 @@ function fitToBudget(
   // exactly like a project that has no pitfalls — which is what happened to this repository the moment
   // its `CURRENT_TASK` grew. POINTERS is priority 4 and never dropped, so the notice always survives.
   if (pointers !== undefined) {
-    for (let pass = 0; pass < 3; pass++) {
-      const already = pointers.lines.findIndex((l) => l.startsWith('  omitted:'));
-      if (dropped.length === 0) {
-        // Nothing was taken on this pass: drop any stale notice from the previous one.
-        if (already >= 0) pointers.lines.splice(already, 1);
-        result = dropToFit(sections, fits);
-        kept = result.kept;
-        dropped = result.dropped;
-        break;
-      }
-      if (already >= 0) pointers.lines.splice(already, 1);
-      pointers.lines.push(omissionLine(dropped));
+    // The notice costs bytes, and those bytes come out of the elastic content it is describing — so
+    // printing it can drop one more section than the run that produced it. Iterate to a fixed point.
+    //
+    // Convergence is guaranteed, not hoped for: every pass adds the notice, and a longer notice can only
+    // remove more, so the drop sets form an *increasing* sequence over a finite set of sections. The
+    // first version compared `again.dropped` with itself after assigning it, so the loop could never run
+    // twice and the notice named a strictly smaller set than `fp.dropped` reported — a budget that drops
+    // content and does not name it on the artefact, which is the one thing this notice exists to prevent.
+    for (let pass = 0; pass <= sections.length + 2; pass++) {
+      const at = pointers.lines.findIndex((l) => l.startsWith('  omitted:'));
+      if (at >= 0) pointers.lines.splice(at, 1);
+      const notice = dropped.length > 0 ? omissionLine(dropped) : '';
+      if (notice !== '') pointers.lines.push(notice);
       const again = dropToFit(sections, fits);
       kept = again.kept;
       dropped = again.dropped;
-      if (sameDropped(again.dropped, dropped)) break;
+      // Compared as the *rendered text*, which is the thing that has to agree with `dropped`.
+      if ((again.dropped.length > 0 ? omissionLine(again.dropped) : '') === notice) break;
     }
   }
 
@@ -369,7 +393,22 @@ function fitToBudget(
   if (!fits(kept)) {
     // The floor itself does not fit. Say so on the artefact rather than only in the exit code: a reader
     // of a pasted fingerprint cannot see stderr.
-    markdown = hardTruncate(markdown, maxBytes);
+    //
+    // The notice is **reserved for**, because the hard cut would otherwise remove the very line that
+    // names what the cut took — leaving a truncated fragment that looks like a whole document. Below the
+    // ~338-byte floor there is no room for the content, but there is always room for the sentence that
+    // says content is missing.
+    const notice = dropped.length > 0 && pointers !== undefined ? `${omissionLine(dropped)}\n` : '';
+    const reserve = Buffer.byteLength(notice, 'utf8');
+    // A ceiling smaller than the sentence that reports the truncation has to choose, and `--max-bytes`
+    // promises a ceiling: below it the artefact is a cut fragment and the reason is on stderr and in
+    // `--json`. Never exceeding the budget wins over naming, because an unenforceable ceiling is the
+    // worse of the two lies.
+    if (reserve > 0 && maxBytes > reserve + 1) {
+      markdown = `${hardTruncate(markdown, maxBytes - reserve).trimEnd()}\n${notice}`;
+    } else {
+      markdown = hardTruncate(markdown, maxBytes);
+    }
     if (!dropped.some((d) => d.section === '(hard cut)')) dropped.push({ section: '(hard cut)', lines: 0, how: 'dropped' });
   }
   // "Truncated" means content was left out to fit the budget — whether a section was dropped, a line was

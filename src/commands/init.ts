@@ -19,6 +19,7 @@ import { pruneStaleCarriers } from './prune-carriers.js';
 import { syncGoalCarrier, type GoalCarrierResult } from './goal-carrier.js';
 import { CONFIG_PATH, goalEnabled, isLegacyConfig, readConfig, writeConfig } from '../core/config.js';
 import { VERSION } from '../version.js';
+import { CONTEXT_REMINDER_PERCENT } from '../core/goal.js';
 import { renderRuleFile, refreshContract } from '../adapters/rules.js';
 import {
   detectProject,
@@ -92,6 +93,27 @@ async function writeNeverClobber(
 }
 
 /** Write when the content differs. Only for files engram owns end-to-end. */
+/**
+ * Create a file if it is absent, and leave it alone forever after.
+ *
+ * For files whose content a later engram command also writes: `init` owns only their existence. The
+ * difference from `writeGenerated` is the whole point — that one replaces content it did not write, which
+ * is right for a scaffold it owns and wrong for a file another command owns fields in.
+ */
+async function writeOnce(
+  root: string,
+  relPath: string,
+  content: string,
+  dryRun: boolean,
+): Promise<WriteAction> {
+  const abs = path.join(root, relPath);
+  if (await isDir(abs)) return 'skipped';
+  if (await pathExists(abs)) return 'kept';
+  if (dryRun) return 'created';
+  await writeIfMissing(abs, content);
+  return 'created';
+}
+
 async function writeGenerated(
   root: string,
   relPath: string,
@@ -165,12 +187,15 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const bootstrapPath = '.engram/BOOTSTRAP.md';
   files.push({ path: bootstrapPath, action: await writeGenerated(opts.root, bootstrapPath, bootstrap, dryRun) });
 
-  // The config records only the goal opt-in now. Written through `writeGenerated` alone: a second
-  // `writeConfig` call would turn the very first init into a `kept` action and make "everything is
-  // created" untrue. An existing config is preserved as-is, so a project's `goal.enabled` survives
-  // a re-init.
+  // **Written once, never replaced.** The config holds fields `init` does not own — `goal.enabled` and
+  // the `limits` block — so a re-run must not touch it. It used to go through `writeGenerated`, which
+  // replaces content whenever it differs, and the comment above the call claimed the opposite. Measured
+  // consequence: `init` → `config --goal on` → `init` wrote `{"version": 2}`, and the **next `sync` then
+  // deleted `.pi/extensions/engram-goal.ts`** (`goalEnabled(...) === false` → `syncGoalCarrier(false)`).
+  // A re-run silently disarmed the goal engine. This is the same invariant `setGoalEnabled` was fixed
+  // for, one layer up: a write must never drop a field it does not own.
   const content = `${JSON.stringify({ version: 2 }, null, 2)}\n`;
-  files.push({ path: CONFIG_PATH, action: await writeGenerated(opts.root, CONFIG_PATH, content, dryRun) });
+  files.push({ path: CONFIG_PATH, action: await writeOnce(opts.root, CONFIG_PATH, content, dryRun) });
 
   if (facts.existingRuleFiles.length && !opts.force) {
     warnings.push(
@@ -296,9 +321,12 @@ export async function runSync(root: string, dryRun = false): Promise<SyncResult>
   const ruleFilesResult: SyncResult['ruleFiles'] = [];
   const legacy = await isLegacyConfig(root);
   if (legacy && !dryRun) {
-    // A v1 config naming six clients is rewritten to v2 while preserving the goal opt-in; otherwise
-    // the file keeps claiming tools engram cannot install for and `engram config` contradicts it.
-    await writeConfig(root, goalEnabled(await readConfig(root)));
+    // A v1 config naming six clients is rewritten to v2 while preserving everything v2 still has a use
+    // for: the goal opt-in **and** the `limits` block. Passing only the opt-in deleted a project's tuned
+    // liveness deadline on the first `sync` — `writeConfig` emits `limits` only when it is given one, and
+    // a v1 file is a legal place to have written it.
+    const legacyCfg = await readConfig(root);
+    await writeConfig(root, goalEnabled(legacyCfg), legacyCfg?.limits);
   }
 
   for (const def of ruleFiles()) {
@@ -342,7 +370,7 @@ export async function runSync(root: string, dryRun = false): Promise<SyncResult>
   const goalCarrier = await syncGoalCarrier(
     root,
     wantsGoal,
-    { engramBin: 'engram', version: VERSION },
+    { engramBin: 'engram', version: VERSION, reminderPercent: CONTEXT_REMINDER_PERCENT },
     dryRun,
   );
   if (goalCarrier.note) warnings.push(`${goalCarrier.path}: ${goalCarrier.note}`);

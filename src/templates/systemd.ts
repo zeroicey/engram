@@ -17,8 +17,12 @@
  *    reason, so the agent judges an exit against `done_when` instead of trusting it.
  * 2. **No shell.** Every argument is its own word, so no quoting rule can turn a goal id or a reason
  *    into a second command.
- * 3. **`%` is a systemd specifier.** A goal text containing a percent sign would be rewritten by
- *    systemd before `engram` ever saw it, so it is escaped rather than passed through.
+ * 3. **`%` is a systemd specifier**, in *every* directive systemd itself parses — `Description=`, and the
+ *    `Exec*` lines too. A goal text containing a percent sign would be rewritten before `engram` ever saw
+ *    it, so `unitValue` escapes it. `ctx.job` is deliberately **not** escaped: it is the user's own
+ *    systemd syntax, and rewriting it would break `%i`, `%h` and the rest of the specifier language they
+ *    may legitimately be using. The docstring used to claim otherwise, which is the kind of comment that
+ *    makes a reader trust the wrong line.
  *
  * This module builds strings only — no filesystem, like every other `templates/` module.
  */

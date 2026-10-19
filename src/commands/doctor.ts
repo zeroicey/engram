@@ -10,7 +10,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { compactCurrentTask, loadMemory, POINTER_PREFIX } from '../core/memory.js';
 import { hasErrors, runChecks, tally, type Finding } from '../core/doctor.js';
-import { pathExists, readFileSafe, writeFile } from '../core/project.js';
+import { pathExists, readFileSafe, readIfPresent, writeFile } from '../core/project.js';
 import { TOOLS } from '../adapters/index.js';
 
 export interface DoctorOptions {
@@ -71,7 +71,9 @@ export const ARCHIVE_REL = '.ai/sessions/_milestone-log-archive.md';
  * The archive is **appended to**, never rewritten: a second run must not lose the first run's entries,
  * and a human may have added their own notes under the same heading.
  */
-async function applyCompact(root: string): Promise<{ moved: number; archive: string; wrote: boolean }> {
+async function applyCompact(
+  root: string,
+): Promise<{ moved: number; archive: string; wrote: boolean; error?: string }> {
   const taskPath = path.join(root, '.ai/CURRENT_TASK.md');
   const raw = await readFileSafe(taskPath);
   if (raw === null) return { moved: 0, archive: ARCHIVE_REL, wrote: false };
@@ -81,12 +83,20 @@ async function applyCompact(root: string): Promise<{ moved: number; archive: str
   if (moved.length === 0) return { moved: 0, archive: ARCHIVE_REL, wrote: false };
 
   const archivePath = path.join(root, ARCHIVE_REL);
-  const existing = (await readFileSafe(archivePath)) ?? `# Completed milestones\n`;
+  // `readIfPresent`, not `readFileSafe`: the latter collapses "unreadable" to `null`, and treating an
+  // archive that failed to read transiently as absent **overwrote it** with only the new entries —
+  // permanent loss of everything previously archived. Losing history is the one thing this command
+  // promises not to do, so a read error stops the run.
+  const read = await readIfPresent(archivePath);
+  if (read.error) return { moved: 0, archive: ARCHIVE_REL, wrote: false, error: `cannot read ${ARCHIVE_REL}: ${read.error}` };
+  const existing = read.text ?? `# Completed milestones\n`;
   const body = existing.endsWith('\n') ? existing : `${existing}\n`;
   // A heading for the run, so two compactions months apart are distinguishable in the file.
   const stamp = new Date().toISOString().slice(0, 10);
-  await writeFile(archivePath, `${body}\n## Compacted ${stamp}\n\n${moved.join('\n')}\n`);
+  // The **task file first**: the archive is append-only, so a crash after this write but before it would
+  // otherwise leave the milestone in both files and the next `--fix` would append it a second time.
   await writeFile(taskPath, before === currentTask ? before : currentTask);
+  await writeFile(archivePath, `${body}\n## Compacted ${stamp}\n\n${moved.join('\n')}\n`);
   return { moved: movedCount, archive: ARCHIVE_REL, wrote: before !== currentTask };
 }
 
@@ -117,9 +127,11 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
   const fixLines: string[] = [];
   if (fixed !== undefined) {
     fixLines.push(
-      fixed.moved === 0
-        ? '  (nothing to compact: no completed milestones in CURRENT_TASK.md)'
-        : `  moved ${fixed.moved} completed milestone(s) → ${fixed.archive}`,
+      fixed.error !== undefined
+        ? `  NOTHING WAS MOVED — ${fixed.error}`
+        : fixed.moved === 0
+          ? '  (nothing to compact: no completed milestones in CURRENT_TASK.md)'
+          : `  moved ${fixed.moved} completed milestone(s) → ${fixed.archive}`,
     );
   }
 

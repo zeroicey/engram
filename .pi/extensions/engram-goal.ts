@@ -14,9 +14,12 @@ import { spawnSync } from "node:child_process";
 // can point the extension at a binary without regenerating the file.
 const ENGRAM = process.env.ENGRAM_BIN || "engram";
 
+const REMINDER_PERCENT = 85;
+
 const CONTEXT_REMINDER =
-  "Context is above 85%. If this is a clean delivery point, consider goal_report(status='handoff') " +
-  "and let a successor session take the baton. If it is not, keep working — this is a reminder, not a stop.";
+  "Context is above " + REMINDER_PERCENT + "%. If this is a clean delivery point, consider " +
+  "goal_report(status='handoff') and let a successor session take the baton. If it is not, keep " +
+  "working — this is a reminder, not a stop.";
 
 /**
  * One CLI call. spawnSync with an argv array (never a shell string), so a reason containing a quote
@@ -40,11 +43,19 @@ function call(args) {
     unreachable = true;
     return null;
   }
-  if (!out) return null;
+  // A non-zero exit with output, and an exit 0 with **no** output, are both "I could not read an answer"
+  // — the same state as a missing binary, and the human is told about that one. Leaving unreachable
+  // unset here meant every caller treated null as unreachable while 'warnUnreachable' returned
+  // immediately, and in 'ask' the timer was not even re-armed, so the wait's deadline escalation never ran.
+  if (!out) {
+    unreachable = true;
+    return null;
+  }
   const line = out.split("\n").find((l) => l.startsWith("{")) || out;
   try {
     return JSON.parse(line);
   } catch (e) {
+    unreachable = true;
     return null;
   }
 }
@@ -187,7 +198,12 @@ export default function (pi) {
     function hop(delay) {
       const now = Date.now();
       const bound = Number.isFinite(deadlineAt) ? deadlineAt - now : Number.POSITIVE_INFINITY;
-      timer = setTimeout(tick, Math.max(0, Math.min(delay, bound, MAX_TIMER_MS)));
+      // 'Math.min(NaN, …)' is NaN and 'setTimeout(fn, NaN)' fires after about a millisecond, so a record
+      // whose condition has a non-numeric 'seconds' and no 'fireAt' (both hand-editable) spun the event
+      // loop at ~1 kHz for up to the whole liveness deadline instead of waiting. Every other unparseable
+      // input in this system has an explicit total-function guard; this was the one that did not.
+      const wanted = Number.isFinite(delay) ? delay : MAX_TIMER_MS;
+      timer = setTimeout(tick, Math.max(0, Math.min(wanted, bound, MAX_TIMER_MS)));
     }
 
     // The question. One call, and the engine decides what it means — and changes nothing: a poll is a
@@ -271,10 +287,14 @@ export default function (pi) {
         return;
       }
       if (condition.kind === "time") {
-        // A clock the host can plan, and the only condition it knows without asking.
-        const planned = Number.isFinite(fireAt) ? fireAt : now + condition.seconds * 1000;
-        if (planned - now <= 0) return ask();
-        return hop(planned - now);
+        // A clock the host can plan, and the only condition it knows without asking. 'fireAt' is absolute
+        // and derived by the engine from the wait's own 'requestedAt'; the fallback measures from 'now',
+        // which re-plans the full duration on every hop, so a wait whose 'fireAt' is missing never fires —
+        // it only ever reaches its deadline. That is the failure mode the L2 handoff notes warn about, and
+        // it is why the fallback is a single bounded hop rather than a silent re-arm.
+        if (!Number.isFinite(fireAt)) return hop(WAKE_POLL_MS);
+        if (fireAt - now <= 0) return ask();
+        return hop(fireAt - now);
       }
       // A process or an artifact has no completion event this process can subscribe to, so the only
       // way to learn is to ask — and 'ask' re-arms itself for as long as the engine says the goal is
@@ -353,7 +373,7 @@ export default function (pi) {
   pi.on("turn_end", (_event, ctx) => {
     const usage = ctx && ctx.getContextUsage ? ctx.getContextUsage() : undefined;
     const percent = usage && typeof usage.percent === "number" ? usage.percent : null;
-    if (percent === null || percent < 85) {
+    if (percent === null || percent < REMINDER_PERCENT) {
       reminded = false;
       return;
     }
@@ -445,13 +465,19 @@ export default function (pi) {
       // (upstream #2488), so the successor pane is opened through herdr — and only because the model
       // asked for the handoff in this very call. Nothing in the lifecycle decides to spawn.
       if (res.reason === "handoff requested") {
-        const handed = call([
+        const handoffArgs = [
           "goal",
           "handoff",
           "--json",
           "--reason",
           String(params.reason || params.note || "context is filling"),
-        ]);
+        ];
+        // The identity travels with it, as on every other call: 'identity(ctx)' reads the session from
+        // pi's own context, not from the environment, so without '--session' the CLI's baton check sees an
+        // unidentified caller and refuses the handoff — the whole adapter-driven handoff became a no-op
+        // that reported "was NOT taken".
+        if (session) handoffArgs.push("--session", session);
+        const handed = call(handoffArgs);
         parts.push(
           handed && handed.message
             ? handed.message

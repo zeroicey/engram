@@ -108,7 +108,7 @@ test('parseBrief distinguishes "not declared yet" from "broken"', () => {
 test('a record survives a serialize/parse round trip', () => {
   const r = record({
     status: 'waiting',
-    wake: { token: 'wake-2', condition: { kind: 'artifact', path: 'out/x.json' }, requestedAt: T0, deadlineAt: T0, handled: false },
+    wake: { token: 'wake-2', condition: { kind: 'artifact', path: 'out/x.json' }, requestedAt: T0, deadlineAt: T0 },
     wakeSeq: 2,
     blocker: null,
     lastNote: 'waiting on the eval',

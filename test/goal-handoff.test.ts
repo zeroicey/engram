@@ -366,7 +366,7 @@ test('the extension acts on a handoff request, and reports the outcome in the to
   // The generated file must call the `handoff` verb: a request the host cannot act on is the M3
   // "nothing emits it" gap in a different costume.
   const { goalExtensionSource } = await import('../src/templates/goal-extension.js');
-  const src = goalExtensionSource({ engramBin: 'engram', version: '0.5.0' });
+  const src = goalExtensionSource({ engramBin: 'engram', version: '0.5.0', reminderPercent: 85 });
   assert.match(src, /res\.reason === "handoff requested"/);
   assert.match(src, /"goal",\s*"handoff",\s*"--json"/);
   assert.match(src, /handoff was NOT taken/);

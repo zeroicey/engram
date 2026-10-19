@@ -22,13 +22,23 @@ claim of success.
 - [ ] **Run one real multi-hour goal.** The commit-at-settlement rule, the traceability promise and
       the 24h liveness deadline have only been reasoned about — the biggest untested assumption left
 
+- [x] **2026-10-19 three adversarial reviews (goal engine / host boundary / memory bank), all three
+      BLOCK, all findings fixed.** The shape they found, again and again: *a guard enforced on one side of
+      a transition and not the other*, and *a report that disagrees with the artefact it describes*. The
+      worst was **`engram init` overwriting `.engram/config.json`** — a re-run wrote `{"version": 2}`, and
+      the next `sync` then **deleted `.pi/extensions/engram-goal.ts`**, silently disarming the goal engine.
+      Also: the no-progress detector was dead in production (the digest included the engine's own
+      `goal.json`, so two consecutive digests could never be equal); two model-triggerable `RangeError`s
+      escaped `reduce`; `pendingHandoff` could mute the loop forever; `severityOf` labelled a real pitfall
+      `unknown`; and `doctor` reported a healthy bank over an unreadable one. See
+      `.ai/pitfalls/cases/the-reviews-fixed-the-same-shape-three-times.md`.
 - [ ] **Publish 0.5.0** (human, 2FA). The Pi-only break has never been installed by anyone
 
 _Completed milestones: 44 archived in `.ai/sessions/_milestone-log-archive.md` — read it before asking "did we already try that?"._
 
 ## Code state
 
-Branch `main`. 33 modules, 18 suites, 342 tests, zero runtime deps. One adapter (`pi`), config v2 with
+Branch `main`. 33 modules, 18 suites, 351 tests, zero runtime deps. One adapter (`pi`), config v2 with
 `goal` on. Module map, layering and the L2 protocol: `.ai/ARCHITECTURE.md`.
 
 ## Blockers

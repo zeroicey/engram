@@ -168,36 +168,6 @@ test('a goal that cannot be judged is reported, and a damaged brief is an error'
   }
 });
 
-test('a latched wake that was already consumed is an error: the wait can never fire', async () => {
-  interface Rec {
-    status: string;
-    wake: unknown;
-  }
-  const sb = await sandbox('engram-doctor-wake-');
-  try {
-    await seedBank(sb);
-    await runCli(['goal', 'new', 'a stuck wait', '--cmd', 'true', '--root', sb.root]);
-    await runCli([
-      'goal', 'event', '--type', 'report',
-      '--report', '{"status":"wait","wakeOnType":"time","wakeOnSeconds":600}',
-      '--root', sb.root,
-    ]);
-    const id = (await sb.list('.ai/goal'))[0] ?? '';
-    const path = `.ai/goal/${id}/goal.json`;
-    const record = JSON.parse(await sb.read(path)) as Rec;
-    // The shape a crash between "consume" and "clear" leaves behind.
-    (record.wake as { handled: boolean }).handled = true;
-    await sb.write(path, `${JSON.stringify(record, null, 2)}\n`);
-
-    const r = await doctor(sb.root);
-    assert.equal(r.code, 1);
-    assert.ok(rules(r.json).includes('goal/handled-wake-latched'));
-    assert.match(r.out, /can never fire/);
-  } finally {
-    await sb.cleanup();
-  }
-});
-
 test('a missing bank is one clear error, not a pile of them', async () => {
   const sb = await sandbox('engram-doctor-none-');
   try {

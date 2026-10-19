@@ -210,7 +210,10 @@ function defaultRun(bin: string): (argv: string[], timeoutMs: number) => Promise
 }
 
 function runnerOf(deps: HerdrDeps): { run: (argv: string[], timeoutMs: number) => Promise<HerdrRun>; bin: string } {
-  const bin = deps.bin ?? 'herdr';
+  // `HERDR_BIN_PATH` is what the runtime exports about itself, and a systemd user unit has no login
+  // `PATH` — the same reason `engramCommand` absolutises engram. Without this, an L3 wake on a machine
+  // where herdr is installed outside the unit's `PATH` failed with ENOENT while the runtime was present.
+  const bin = deps.bin ?? process.env.HERDR_BIN_PATH?.trim() ?? 'herdr';
   return { run: deps.run ?? defaultRun(bin), bin };
 }
 

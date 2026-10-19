@@ -242,8 +242,14 @@ export function parseSections(raw: string | null): SectionsResult {
     if (rawWriteWhen !== undefined && writeWhen === undefined) {
       warnings.push(`${where} (${name}): "writeWhen" must be a single line without control characters — the write-back row was omitted`);
     }
+    // `normaliseCell` like `trigger`/`writeWhen`/`file`/`dir`: this value reaches `engram new <section>`
+    // verbatim, so `["📝 DRAFT\ninjected"]` wrote a second line into the file that command creates. A
+    // value that cannot be a cell is dropped rather than written.
     const status = Array.isArray(e.status)
-      ? e.status.filter((s): s is string => typeof s === 'string' && s.trim() !== '')
+      ? e.status
+          .filter((v): v is string => typeof v === 'string')
+          .map((v) => normaliseCell(v))
+          .filter((v): v is string => v !== null)
       : undefined;
     const rawFile = asString(e.file);
     const file = rawFile === undefined ? null : normaliseFilePattern(rawFile);

@@ -54,10 +54,12 @@ export async function runDump(opts: DumpOptions): Promise<DumpResult> {
         bytes: 0,
         truncated: false,
         dropped: [],
+        readErrors: bank.readErrors,
       },
     };
   }
   const fp = buildFingerprint(bank, {
+    readErrors: bank.readErrors,
     maxBytes: opts.maxBytes,
     projectName: opts.projectName,
     recentSessions: opts.recentSessions,

@@ -147,7 +147,7 @@ GOAL VERBS
   engram goal status | list | check [--id <id>] | close [--id <id>] [--abandoned]
   engram goal wake --reason "<why>" [--token <token>] [--id <id>] [--deliver]
   engram goal unit <id> --job "<command>" [--write] [--engram <path>]
-  engram goal handoff [--id <id>] [--reason "<why now>"] [--workspace <ws>] [--json]  # open a successor window
+  engram goal handoff [--id <id>] [--reason "<why now>"] [--session <path>] [--workspace <ws>] [--json]
   engram goal baton --session <path> [--pane <pane-id>] [--id <id>]
 
   A goal is judged, not asserted: \`done\` requires the engine to observe \`done_when\`.
@@ -426,6 +426,9 @@ async function cmdGoal(root: string, args: Args): Promise<number> {
         reason: str(args.flags, 'reason'),
         name: str(args.flags, 'name'),
         paneId: str(args.flags, 'pane'),
+        // `--session` as on `event` and `baton`: the extension holds the session from pi's context and
+        // must be able to pass it, because the baton check refuses an unidentified caller.
+        ...(str(args.flags, 'session') ? { sessionPath: str(args.flags, 'session') as string } : {}),
         ...(str(args.flags, 'workspace') ? { workspaceId: str(args.flags, 'workspace') as string } : {}),
         ...(identity.sessionPath ? { sessionPath: identity.sessionPath } : {}),
       });

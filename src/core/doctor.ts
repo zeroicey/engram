@@ -87,15 +87,36 @@ export async function runChecks(input: DoctorInput): Promise<Finding[]> {
     ];
   }
 
+  // Something in the bank exists but could not be read. This comes first because it invalidates every
+  // other answer: `runChecks` sees empty arrays, not errors, so a `chmod 000 .ai/decisions` produced
+  // **zero findings and "bank is healthy"** while `dump` had silently lost the whole BINDING block. A
+  // checker that reports health over an unreadable bank is worse than no checker.
+  for (const err of bank.readErrors) {
+    findings.push({
+      rule: 'bank/unreadable',
+      severity: 'error',
+      message: `part of the bank could not be read — ${err}`,
+      hint: 'anything reported below is from what *was* readable; fix the permissions before trusting it',
+    });
+  }
+
   // --- the file every session reads -------------------------------------------------------------
 
   const task = bank.currentTask;
+  // Absent and unreadable are different diagnoses: the first means nothing is there, the second means
+  // something is there and engram cannot see it. Reporting the second as the first sends the reader
+  // looking for a missing file.
+  const taskUnreadable = bank.readErrors.some((e) => e.includes('CURRENT_TASK.md'));
   if (task === null) {
     findings.push({
       rule: 'current-task/absent',
       severity: 'error',
-      message: '.ai/CURRENT_TASK.md is missing — nothing tells a session what to work on',
-      hint: 'run `engram sync` to scaffold it, or `engram init` on a fresh repository',
+      message: taskUnreadable
+        ? '.ai/CURRENT_TASK.md is unreadable — nothing tells a session what to work on'
+        : '.ai/CURRENT_TASK.md is missing — nothing tells a session what to work on',
+      hint: taskUnreadable
+        ? 'fix the path or its permissions; the file exists and engram cannot see it'
+        : 'run `engram sync` to scaffold it, or `engram init` on a fresh repository',
     });
   } else {
     if (task.missing.length) {
@@ -275,16 +296,6 @@ function goalFindings(record: GoalRecord, undeclared: boolean, briefError: strin
       severity: 'error',
       message: `goal ${record.id}: ${briefError}`,
       hint: 'fix the BRIEF.md `## Done when` block: a typo must not read as "not declared"',
-    });
-  }
-  if (record.wake !== null && record.wake.handled) {
-    // A latched wake that was already consumed is a stuck timer: the record says "waiting on this
-    // token" while the engine will refuse that token as a duplicate.
-    out.push({
-      rule: 'goal/handled-wake-latched',
-      severity: 'error',
-      message: `goal ${record.id} still holds wake ${record.wake.token}, which is already handled`,
-      hint: 'the wait can never fire — `engram goal check --id ' + record.id + '` re-arms or escalates it',
     });
   }
   return out;

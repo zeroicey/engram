@@ -167,7 +167,7 @@ test('a reported progress gets its own continuation text, not the "no report" on
 test('a settled run continues, except while a question is in flight', () => {
   assert.equal(nudgeReason(send(view(), { kind: 'settled', now: T0 }).effects), 'continue');
 
-  const waiting = record({ status: 'waiting', wake: { token: 'wake-1', condition: { kind: 'process', pid: 1 }, requestedAt: T0, deadlineAt: hours(24), handled: false } });
+  const waiting = record({ status: 'waiting', wake: { token: 'wake-1', condition: { kind: 'process', pid: 1 }, requestedAt: T0, deadlineAt: hours(24) } });
   assert.deepEqual(send(view(waiting), { kind: 'settled', now: T0 }).effects, [{ kind: 'silent', reason: 'waiting' }]);
 
   const blocked = record({ status: 'blocked', blocker: { reason: 'x', repeats: 1, needs: null, raisedAt: T0 } });
@@ -182,8 +182,16 @@ test('a settled run continues, except while a question is in flight', () => {
   const pendingUnclassified = record({ pendingVerdict: { claimedAt: T0, claim: null } });
   assert.equal(nudgeReason(send(view(pendingUnclassified, brief(null)), { kind: 'settled', now: T0 }).effects), 'continue');
 
+  // A pending handoff **must not mute the loop unbounded**: reaching a settle at all means this session
+  // still holds the baton, so the request was not taken and the holder has to keep working. The old
+  // `silent('handoff-requested')` returned no nudge, no notification, and never incremented
+  // `unreportedSettles`, so a handoff that failed (no herdr, a refused prompt) left a `running` goal with
+  // nothing watching it and no deadline — only `waiting` has one.
   const handoff = record({ pendingHandoff: { requestedAt: T0, reason: null } });
-  assert.deepEqual(send(view(handoff), { kind: 'settled', now: T0 }).effects, [{ kind: 'silent', reason: 'handoff-requested' }]);
+  const after = send(view(handoff), { kind: 'settled', now: T0 });
+  assert.equal(nudgeReason(after.effects), 'continue');
+  assert.match((after.effects[0] as Extract<GoalEffect, { kind: 'nudge' }>).message, /handoff was requested but was not taken/);
+  assert.equal(after.view.record.unreportedSettles, 1, 'and the silent-settle floor still counts');
 });
 
 test('a wait latches, arms a token and mutes the loop', () => {
@@ -588,7 +596,7 @@ test('wakes that arrived while blocked are drained when the human answers', () =
   // count accumulated across every unrelated blockage and `goal status` kept saying "N wake(s) arrived
   // while blocked" about wakes the human had already been told about. Same rule as `pendingHandoff`:
   // every `pending*` field needs the transition that retires it, on every path.
-  const armed = record({ status: 'waiting', wake: { token: 'wake-1', condition: { kind: 'time', seconds: 60 }, requestedAt: T0, deadlineAt: hours(24), handled: false } });
+  const armed = record({ status: 'waiting', wake: { token: 'wake-1', condition: { kind: 'time', seconds: 60 }, requestedAt: T0, deadlineAt: hours(24) } });
   const blocked = send(view(armed), { kind: 'report', now: hours(1), report: { status: 'blocked', reason: 'need a decision' } });
   const wake1 = send(blocked.view, { kind: 'wake', now: hours(2), token: 'wake-1', reason: 'training finished' });
   assert.equal(wake1.view.record.pendingWakes.length, 1, 'recorded, and escalated to the human');
@@ -612,7 +620,7 @@ test('a restarted session in the same pane adopts the goal and re-arms the wait'
   const armed = record({
     status: 'waiting',
     baton: { sessionPath: BATON, paneId: 'w13:p1', startedAt: T0 },
-    wake: { token: 'wake-1', condition: { kind: 'time', seconds: 600 }, requestedAt: T0, deadlineAt: hours(24), handled: false },
+    wake: { token: 'wake-1', condition: { kind: 'time', seconds: 600 }, requestedAt: T0, deadlineAt: hours(24) },
   });
   const restarted = '/sessions/two.jsonl';
   const r = reduce(
@@ -631,8 +639,13 @@ test('a restarted session in the same pane adopts the goal and re-arms the wait'
     { kind: 'reconcile', now: hours(1), sessionPath: '/sessions/other.jsonl', paneId: 'w99:p9' },
     DEFAULT_LIMITS,
   );
+  // An identified intruder is refused **before anything reads the wait**: it used to receive a
+  // `schedule-wake` for a token its own `wake`/`poll` would be refused (an effect no host can act on),
+  // and reconciling an expired wait flipped the goal to `blocked` on behalf of a session that does not
+  // hold it.
   assert.equal(intruder.record.baton?.sessionPath, BATON, 'the baton did not move');
-  assert.deepEqual(kinds(intruder.effects), ['schedule-wake'], 'it may still learn about the wait, but it does not hold it');
+  assert.equal(intruder.record.status, 'waiting', 'and the wait is untouched');
+  assert.deepEqual(kinds(intruder.effects), ['ignore']);
 
   // A restart in the same pane after the wait expired escalates instead of re-arming — the deadline is
   // still the deadline, even across a restart.
@@ -652,4 +665,75 @@ test('an unclaimed goal is claimed by the first session that reconciles it', () 
   // Without this a goal created outside a session could never be driven at all: every event would be
   // refused for having no holder.
   assert.deepEqual(kinds(r.effects), []);
+});
+
+test('an unrepresentable wait does not throw out of the reducer', () => {
+  // `wakeOnSeconds` is model-controlled and was bounded only at the low end, so `1e15` passed validation
+  // and `seconds * 1000` overflowed the Date range — `RangeError: Invalid time value` escaping `reduce`,
+  // which runs inside a lifecycle hook and takes the session with it. Measured through the CLI: the
+  // command printed `Invalid time value` and no JSON document.
+  const r = send(view(), { kind: 'report', now: T0, report: { status: 'wait', wakeOn: { kind: 'time', seconds: 1e15 } } });
+  assert.equal(r.view.record.status, 'waiting', 'the wait is latched, not crashed');
+  assert.equal(r.view.record.wake?.deadlineAt, T0, 'an unplannable deadline keeps the caller string, which isPast reads as expired');
+  const scheduled = r.effects[0];
+  assert.equal(scheduled?.kind === 'schedule-wake' ? scheduled.fireAt : 'missing', null);
+});
+
+test('an unparseable pendingVerdict timestamp escalates instead of throwing', () => {
+  // The store deliberately repairs a hand-edited record (`claimedAt: str(...) ?? ''`), and the one input
+  // `isPast` exists to survive reached `.toISOString()` before `isPast` saw it.
+  const stale = record({ pendingVerdict: { claimedAt: '', claim: 'x' } });
+  const r = send(view(stale, brief()), { kind: 'settled', now: T0 });
+  assert.equal(r.view.record.status, 'blocked');
+  assert.equal(r.view.record.blocker?.reason, 'a done claim was never answered by the gate');
+});
+
+test('a failed verdict retires the wait and does not promote a blocked goal', () => {
+  // The one transition that moved `status` away from `waiting` while neither setting `wake: null` nor
+  // emitting `clear-wake`. Reachable with one documented verb: `report wait` (timer armed) → a human runs
+  // `engram goal check` → the gate fails. The host's timer stayed armed for a token the engine then
+  // refused, so the wake the model had to read was never delivered.
+  const armed = send(view(), { kind: 'report', now: T0, report: { status: 'wait', wakeOn: { kind: 'process', pid: 1 } } }).view;
+  const failed = send(armed, { kind: 'verdict', now: hours(1), passed: false, detail: 'gate said no' });
+  assert.equal(failed.view.record.wake, null, 'the wait is retired');
+  assert.equal(failed.view.record.status, 'running', 'and a waiting goal resumes');
+  assert.deepEqual(kinds(failed.effects), ['clear-wake', 'nudge'], 'the host is told to cancel its timer');
+
+  // A `blocked` goal whose gate was re-checked by a human is still blocked: promoting it printed
+  // `status: running` next to `blocked: <reason>` and nudged the model out of a human-facing state.
+  const blocked = record({ status: 'blocked', blocker: { reason: 'need a decision', repeats: 1, needs: null, raisedAt: T0 } });
+  const still = send(view(blocked, brief()), { kind: 'verdict', now: hours(1), passed: false, detail: 'gate said no' });
+  assert.equal(still.view.record.status, 'blocked');
+});
+
+test('a later statement of what the goal is doing retires a pending handoff', () => {
+  // `pendingHandoff` was cleared only by `onProgress` (and a baton transfer). A request followed by a
+  // `blocked` report survived the human's answer, and every later settlement was silenced by it.
+  const requested = record({ pendingHandoff: { requestedAt: T0, reason: 'context' } });
+  const blocked = send(view(requested), { kind: 'report', now: hours(1), report: { status: 'blocked', reason: 'need a decision' } });
+  assert.equal(blocked.view.record.pendingHandoff, null);
+
+  const waited = send(view(requested), { kind: 'report', now: hours(1), report: { status: 'wait', wakeOn: { kind: 'time', seconds: 60 } } });
+  assert.equal(waited.view.record.pendingHandoff, null);
+});
+
+test('a wait with no readable condition escalates instead of sitting silent', () => {
+  // `status: waiting` + `wake: null` is producible: the store drops a malformed condition. Nothing could
+  // leave it — `onSettled` is silent, `onPoll` has no token, `reconcile` skipped the branch — so it had no
+  // deadline and no timer.
+  const broken = record({ status: 'waiting', wake: null });
+  const r = reduce(view(broken), { kind: 'reconcile', now: hours(1) }, DEFAULT_LIMITS);
+  assert.equal(r.record.status, 'blocked');
+  assert.equal(r.effects[0]?.kind, 'escalate');
+});
+
+test('the first identified session to drive a holderless goal claims it', () => {
+  // "One goal, one baton" is only true if something takes the baton. A goal created the documented human
+  // way is holderless, so two panes both passed the `holdsBaton` check and both could drive it.
+  const holderless = record({ baton: null });
+  const first = reduce(view(holderless), { kind: 'report', now: T0, report: { status: 'progress' }, sessionPath: '/sessions/one.jsonl' }, DEFAULT_LIMITS);
+  assert.equal(first.record.baton?.sessionPath, '/sessions/one.jsonl');
+
+  const second = reduce({ record: first.record, brief: brief() }, { kind: 'report', now: T0, report: { status: 'progress' }, sessionPath: '/sessions/two.jsonl' }, DEFAULT_LIMITS);
+  assert.equal(second.effects[0]?.kind, 'ignore', 'the second pane is refused now that someone holds it');
 });

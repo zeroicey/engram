@@ -480,7 +480,11 @@ export function parseChecklist(markdown: string): ChecklistItem[] {
       line: i + 1,
       text,
       checked: (m[1] ?? '').toLowerCase() === 'x',
-      evidence: (backtick?.[1] ?? explicit?.[1] ?? '').trim() || null,
+      // The **explicit** clause wins over a backticked span anywhere in the line. It exists to be
+      // unambiguous, and the old precedence made it the weaker of the two: an item with a backticked path
+      // *and* `evidence: cmd:npm test` resolved to the path, discarding the declaration the author wrote
+      // for exactly this reason — so the verdict checked something nobody declared.
+      evidence: (explicit?.[1] ?? backtick?.[1] ?? '').trim() || null,
     });
   }
   return out;

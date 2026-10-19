@@ -58,7 +58,6 @@ export interface WakeRecord {
   requestedAt: string;
   /** Liveness bound: if nothing arrives by then, the goal escalates instead of staying silent. */
   deadlineAt: string;
-  handled: boolean;
 }
 
 export interface Blocker {
@@ -198,6 +197,29 @@ export interface GoalStep {
   effects: GoalEffect[];
 }
 
+/**
+ * The largest instant a JavaScript `Date` can hold, in ms since the epoch (`8.64e15`).
+ *
+ * Anything past it is an `Invalid Date`, and `.toISOString()` on one throws `RangeError`. That mattered
+ * because `wakeOnSeconds` is model-controlled and bounded only at the low end: `1e15` passed validation,
+ * `seconds * 1000` overflowed the Date range, and the exception escaped `reduce` — the one thing the
+ * engine's own contract forbids, since it runs inside a lifecycle hook and takes the session with it.
+ * Measured: `engram goal event --type report --report '{"status":"wait","…","wakeOnSeconds":1e15}'`
+ * printed `Invalid time value` and no JSON document.
+ */
+const MAX_DATE_MS = 8.64e15;
+
+/**
+ * An ISO instant, or `null` when the sum is not representable.
+ *
+ * One helper for both wake times, so the overflow bound cannot be applied in one place and forgotten in
+ * the other — which is exactly how the two callers disagreed before.
+ */
+function isoOrNull(ms: number): string | null {
+  if (!Number.isFinite(ms) || Math.abs(ms) > MAX_DATE_MS) return null;
+  return new Date(ms).toISOString();
+}
+
 export interface GoalLimits {
   /** Liveness deadline for a wait, in milliseconds. Default 24h. */
   livenessMs: number;
@@ -307,7 +329,7 @@ function fireAtFor(condition: WakeCondition, requestedAt: string): string | null
   // Same total-not-throwing rule as `deadlineFor`: a hand-edited timestamp must not throw inside a
   // lifecycle hook, and `null` is already the "no plan" answer.
   if (!Number.isFinite(from)) return null;
-  return new Date(from + condition.seconds * 1000).toISOString();
+  return isoOrNull(from + condition.seconds * 1000);
 }
 
 /**
@@ -341,7 +363,9 @@ function deadlineFor(condition: WakeCondition, now: string, limits: GoalLimits):
   // Returning the caller's own string keeps the record monotonic instead of crashing.
   if (!Number.isFinite(nowMs)) return now;
   const planned = condition.kind === 'time' ? condition.seconds * 1000 + 60_000 : 0;
-  return new Date(nowMs + Math.max(limits.livenessMs, planned)).toISOString();
+  // A wait whose deadline is not representable keeps the caller's own string, which `isPast` treats as
+  // expired: the honest answer for "1e15 seconds from now" is that the engine cannot plan it.
+  return isoOrNull(nowMs + Math.max(limits.livenessMs, planned)) ?? now;
 }
 
 /**
@@ -372,7 +396,8 @@ export function reduce(
   event: GoalEvent,
   limits: GoalLimits = DEFAULT_LIMITS,
 ): GoalStep {
-  const { record, brief } = view;
+  const { brief } = view;
+  let record = view.record;
 
   // Baton enforcement first: a second session in the same project directory must not be able to
   // drive someone else's goal, and it must be told why it is being ignored. An unidentified caller is
@@ -385,6 +410,15 @@ export function reduce(
           ? 'this event carried no session identity; pass --session so the baton can be checked'
           : 'not the baton holder for this goal';
       return step(record, [{ kind: 'ignore', reason }]);
+    }
+    // The first identified session to drive a **holderless** goal claims it, in one place rather than in
+    // each branch. `holdsBaton` returns true when nobody holds the baton, so without this a goal created
+    // the documented human way (`goal new` with no `--session`) had no single holder: two panes would
+    // each pass that check and both could drive it, and "one goal, one baton" was enforced only for
+    // goals created with an explicit session. `onReconcile` already claims; this is the same move for the
+    // three ordinary driving events.
+    if (record.baton === null && event.sessionPath !== undefined) {
+      record = { ...record, baton: { sessionPath: event.sessionPath, paneId: null, startedAt: event.now } };
     }
   }
 
@@ -411,13 +445,18 @@ export function reduce(
     return step(record, [{ kind: 'ignore', reason: 'not the baton holder for this goal' }]);
   }
 
+  // The handlers take a *view*, and two of them (`onSettled`, `onReport`) read `view.record` — so the
+  // claim above has to reach the view, not just the local. Passing `view` unchanged discarded it, which is
+  // how the first version of the claim silently did nothing.
+  const current: GoalView = { record, brief };
+
   switch (event.kind) {
     case 'run-started':
       return onRunStarted(record, event.now, limits);
     case 'settled':
-      return onSettled(view, event.now, limits);
+      return onSettled(current, event.now, limits);
     case 'report':
-      return onReport(view, event.now, event.report, event.digest ?? null, limits);
+      return onReport(current, event.now, event.report, event.digest ?? null, limits);
     case 'verdict':
       return onVerdict(record, event.now, event.passed, event.detail, event.digest ?? null, limits);
     case 'wake':
@@ -494,7 +533,11 @@ function onSettled(view: GoalView, now: string, limits: GoalLimits): GoalStep {
     // host crash between the two writes) re-emitted `evaluate` on every settlement forever, and
     // `unreportedSettles` was never incremented on this path: the silent-settle floor could not fire
     // either. Two unbounded questions in a row with no detector watching is a permanent mute.
-    if (isPast(now, new Date(Date.parse(record.pendingVerdict.claimedAt) + limits.livenessMs).toISOString())) {
+    // Parsed once, and an unparseable `claimedAt` counts as **stale** rather than throwing. The store
+    // deliberately repairs a hand-edited record (`claimedAt: str(...) ?? ''`), and `Date.parse('')` is
+    // NaN — so the one input `isPast` exists to survive reached `.toISOString()` before `isPast` saw it.
+    const claimedMs = Date.parse(record.pendingVerdict.claimedAt);
+    if (!Number.isFinite(claimedMs) || isPast(now, new Date(claimedMs + limits.livenessMs).toISOString())) {
       return step(
         next(record, now, {
           pendingVerdict: null,
@@ -513,7 +556,27 @@ function onSettled(view: GoalView, now: string, limits: GoalLimits): GoalStep {
     }
     return step(record, [{ kind: 'evaluate', doneWhen: brief.doneWhen }]);
   }
-  if (record.pendingHandoff) return step(record, [silent('handoff-requested')]);
+  // A pending handoff must not mute the loop **unbounded**, and the reasoning is what makes the bound
+  // safe: reaching this point at all means the settling session still holds the baton, because the baton
+  // check refuses a predecessor whose transfer succeeded. So "pending" here means "the handoff was
+  // requested and did not happen" — no herdr, a refused prompt, a human who closed the window — and the
+  // holder has to keep working. Measured dead end before this: the 85 % reminder suggests a handoff, the
+  // model asks for one, `runGoalHandoff` refuses before it records anything, and the record keeps
+  // `pendingHandoff` — so every later settlement returned `silent('handoff-requested')` with no nudge, no
+  // notification, and **no increment of `unreportedSettles`**, which is the floor that would have caught
+  // it. A `running` goal with nothing watching it, and no deadline, because only `waiting` has one.
+  if (record.pendingHandoff) {
+    const unreported = record.unreportedSettles + 1;
+    return step(next(record, now, { unreportedSettles: unreported }), [
+      {
+        kind: 'nudge',
+        reason: 'continue',
+        message:
+          'A handoff was requested but was not taken, and you still hold the baton. Continue the goal, ' +
+          'or report blocked if a successor is genuinely needed — do not stop silently.',
+      },
+    ]);
+  }
 
   const unreportedSettles = record.unreportedSettles + 1;
   if (unreportedSettles >= limits.silentSettles) {
@@ -645,6 +708,10 @@ function onProgress(
     blocker: null,
     pendingHandoff: null,
     lastNote: note,
+    // A report is the model answering, which is what the recorded wakes were news *about*. Leaving them
+    // set made `goal status` keep printing "N wake(s) arrived while blocked" for a goal that is not
+    // blocked, across every later blockage — the same staleness `onRunStarted` was fixed for.
+    pendingWakes: [],
   };
 
   if (unchangedRounds >= limits.stuckRounds) {
@@ -684,7 +751,7 @@ function onWait(
   // the engine stops waiting for it. The host arms its timer for the former and reports to the engine
   // at the latter.
   const fireAt = fireAtFor(condition, now);
-  const wake: WakeRecord = { token, condition, requestedAt: now, deadlineAt, handled: false };
+  const wake: WakeRecord = { token, condition, requestedAt: now, deadlineAt };
   const effects: GoalEffect[] = [];
   // Replacing a wait must cancel the old timer, or the old token would wake the goal out of the new
   // wait — a wake the goal can no longer match, which reads as a lost notification.
@@ -698,6 +765,9 @@ function onWait(
       wakeSeq: record.wakeSeq + 1,
       reports: record.reports + 1,
       blocker: null,
+      // Same rule as `onBlocked`: a wait is a later statement of what this goal is doing, so the earlier
+      // handoff request does not survive it.
+      pendingHandoff: null,
       lastNote: note,
     }),
     effects,
@@ -735,6 +805,9 @@ function onBlocked(
       reports: record.reports + 1,
       blocker: { reason, repeats, needs, raisedAt: now },
       pendingVerdict: null,
+      // A block supersedes a handoff request: the human is now the thing being waited on, and leaving
+      // both set meant the request outlived its reason and muted the loop after the human answered.
+      pendingHandoff: null,
     }),
     effects,
   );
@@ -777,12 +850,27 @@ function onVerdict(
 
   const unchanged = digest !== null && record.lastDigest !== null && digest === record.lastDigest;
   const unchangedRounds = unchanged ? record.unchangedRounds + 1 : record.unchangedRounds;
+
+  // A failed verdict leaves the wait behind, so it must retire it — this was the one transition that
+  // moved `status` *away from* `waiting` while neither setting `wake: null` nor emitting `clear-wake`.
+  // Reachable with one documented verb: `report wait` (timer armed) → a human runs `engal goal check` →
+  // the gate fails → the record claims a live wait in a `running` goal, the host's timer stays armed, and
+  // when the job finally ends `goal wake --token` answers "ignored (the goal is not waiting)" — so the
+  // message the model had to read is never delivered.
+  const dropped: GoalEffect[] = record.wake ? [{ kind: 'clear-wake', token: record.wake.token }] : [];
+
+  // The status is *kept*, not forced to `running`. A `blocked` goal whose gate was re-checked by a human
+  // is still blocked — promoting it silently printed `status: running` next to `blocked: <reason>` and
+  // nudged the model out of a state whose whole meaning is "a human must act".
   const patch: Partial<GoalRecord> = {
-    status: 'running',
+    status: record.status === 'waiting' ? 'running' : record.status,
+    wake: null,
     pendingVerdict: null,
     lastVerdict,
     unchangedRounds,
     lastDigest: digest ?? record.lastDigest,
+    // A verdict is the gate answering, so the wakes that arrived during a blockage have been read.
+    pendingWakes: record.status === 'blocked' ? [] : record.pendingWakes,
   };
 
   if (unchangedRounds >= limits.stuckRounds) {
@@ -793,12 +881,14 @@ function onVerdict(
         blocker: { reason: REASON_NO_PROGRESS, repeats: 1, needs: 'human review', raisedAt: now },
       }),
       [
+        ...dropped,
         { kind: 'escalate', severity: 'stuck', message: `done_when kept failing: ${detail}` },
         silent('blocked'),
       ],
     );
   }
   return step(next(record, now, patch), [
+    ...dropped,
     { kind: 'nudge', reason: 'verdict-failed', message: `done_when did not pass: ${detail}` },
   ]);
 }
@@ -824,7 +914,7 @@ function onVerdict(
 function onPoll(record: GoalRecord, now: string, token: string, observed: boolean): GoalStep {
   if (isClosed(record)) return step(record, [{ kind: 'ignore', reason: 'goal is closed' }]);
   if (record.status !== 'waiting' || record.wake === null) return step(record);
-  if (record.wake.token !== token || record.wake.handled) return step(record);
+  if (record.wake.token !== token) return step(record);
   if (!conditionDue(record.wake.condition, record.wake.requestedAt, now, observed)) {
     return step(record, [silent('waiting')]);
   }
@@ -859,7 +949,7 @@ function onWake(record: GoalRecord, now: string, token: string, reason: string):
   if (record.status === 'waiting' && record.wake) {
     // Idempotent and lossy-safe: a duplicate token is a no-op, so a doubled delivery cannot
     // double-charge, and a missing one is covered by the deadline rather than stranding the goal.
-    if (record.wake.token !== token || record.wake.handled) return step(record);
+    if (record.wake.token !== token) return step(record);
     // The consumed timer must be **cancelled**, not just marked handled: `onReconcile` re-arms from
     // `record.wake`, so a handled-but-still-armed wake produced a `schedule-wake` for a token the
     // engine no longer holds. That token then hit the `handled` guard and was dropped — a lost
@@ -920,6 +1010,7 @@ function onReconcile(
   const sameHolder = sessionPath === undefined || holder === undefined || holder === sessionPath;
   const samePane =
     paneId !== undefined && record.baton?.paneId !== null && record.baton?.paneId === paneId;
+  const adopts = record.baton === null || sameHolder || samePane;
   if (record.baton !== null && sessionPath !== undefined && !sameHolder && samePane) {
     adopted = { ...record, baton: { sessionPath, paneId: paneId ?? record.baton.paneId, startedAt: now } };
   } else if (record.baton === null && sessionPath !== undefined) {
@@ -928,10 +1019,37 @@ function onReconcile(
   }
   record = adopted;
 
+  // An **identified intruder** gets nothing but a refusal. Before this, everything below ran on the
+  // unadopted record: reconciling an *expired* wait flipped the goal `waiting → blocked` on behalf of a
+  // session that does not hold it, and a *live* one handed the intruder a `schedule-wake` for a token
+  // its own `wake`/`poll` would be refused — an effect no host could act on. A same-pane restart is not
+  // an intruder; that is what `adopts` decides.
+  if (!adopts && sessionPath !== undefined) {
+    return step(record, [{ kind: 'ignore', reason: 'not the baton holder for this goal' }]);
+  }
+
+  // A `waiting` record with no wake at all: producible when the store drops a malformed condition
+  // (`wake.condition = {kind:'time'}` with no `seconds`). Nothing can leave it — `onSettled` is silent,
+  // `onPoll` has no token, and the branch below is skipped — so it has no deadline and no timer. Escalate
+  // rather than sit quiet: a wait with no token is a wait with no clock.
+  if (record.status === 'waiting' && record.wake === null) {
+    return step(
+      next(record, now, {
+        status: 'blocked',
+        blocker: { reason: 'the latched wait has no usable condition', repeats: 1, needs: 'human', raisedAt: now },
+      }),
+      [
+        {
+          kind: 'escalate',
+          severity: 'needs-input',
+          message: 'A wait is latched with no readable condition, so nothing can ever wake it. Re-report the wait.',
+        },
+        silent('blocked'),
+      ],
+    );
+  }
+
   if (record.status === 'waiting' && record.wake) {
-    // A wake already consumed is not re-armed: re-arming it would schedule a token the engine no
-    // longer holds, and the arrival would be dropped by the guard above.
-    if (record.wake.handled) return step(record, [{ kind: 'clear-wake', token: record.wake.token }]);
     const expired = isPast(now, record.wake.deadlineAt);
     if (expired) {
       return step(
@@ -968,8 +1086,10 @@ function onReconcile(
   }
 
   if (record.pendingHandoff) {
+    // NaN made `waited >= livenessMs` false, so a hand-edited `requestedAt` silenced the stale-handoff
+    // escalation forever. An unreadable request time is treated as stale, not as fresh.
     const waited = Date.parse(now) - Date.parse(record.pendingHandoff.requestedAt);
-    if (waited >= limits.livenessMs) {
+    if (!Number.isFinite(waited) || waited >= limits.livenessMs) {
       return step(record, [
         {
           kind: 'escalate',

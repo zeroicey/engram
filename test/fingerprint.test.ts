@@ -486,3 +486,44 @@ test('a section is not reported as both shortened and dropped', async (t) => {
   const sections = fp.dropped.map((d) => d.section);
   assert.equal(new Set(sections).size, sections.length, `one entry per section, got ${sections.join(', ')}`);
 });
+
+test('sweeping every budget: nothing dropped goes unnamed, and the ceiling never overflows', async (t) => {
+  // The probe a reviewer asked for. `truncated`/`dropped` and the `omitted:` line are two statements about
+  // one event, and a single-budget assertion cannot see them disagree: the first version of the notice loop
+  // assigned `dropped` and then compared it with itself, so it never ran twice, and the notice named a
+  // strictly smaller set than the report did at every budget whose slack was under the notice's size.
+  const sb = await sandbox('engram-fp-sweep-');
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  for (let i = 1; i <= 4; i++) await sb.write(`.ai/pitfalls/cases/case-${i}.md`, `# pitfall ${i}\n`);
+  const bank = await loadMemory(sb.root);
+
+  const overBudget: number[] = [];
+  const unnamed: number[] = [];
+  for (let maxBytes = 1; maxBytes <= 1800; maxBytes++) {
+    const fp = buildFingerprint(bank, { maxBytes });
+    if (Buffer.byteLength(fp.markdown, 'utf8') > maxBytes) overBudget.push(maxBytes);
+    // Below the ~87-byte notice there is no room for the sentence that names the loss, and the documented
+    // contract is that the byte ceiling wins. Above it, every dropped section must be named.
+    if (maxBytes >= 200 && fp.dropped.length > 0 && !fp.markdown.includes('  omitted:')) unnamed.push(maxBytes);
+  }
+  assert.deepEqual(overBudget, [], 'the ceiling is a ceiling at every value');
+  assert.deepEqual(unnamed, [], 'above the notice floor, nothing dropped is unnamed');
+});
+
+test('a pitfall’s severity comes from its Severity header', async (t) => {
+  // `STATUS_LINE_RE` matches `status:`/`state:` anywhere, and searching for the emoji only inside that one
+  // captured line labelled a real pitfall `unknown`: `**Severity:** 🟠 medium` does not match that regex,
+  // while a fenced `state: …` further down does. `SEV_RANK` sorts by severity, so a medium pitfall became
+  // the first one evicted when PITFALLS is trimmed, and `--json`'s field was wrong.
+  const sb = await sandbox('engram-fp-severity-');
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  await sb.write(
+    '.ai/pitfalls/cases/2026-10-01-shape.md',
+    ['# A pitfall whose severity is only in its header', '', '**Severity:** 🟠 medium · **Date:** 2026-10-01', '', '```', 'state: not a status line', '```', ''].join('\n'),
+  );
+  const bank = await loadMemory(sb.root);
+  const entry = bank.pitfalls.find((p) => p.file === '2026-10-01-shape.md');
+  assert.equal(entry?.severity, 'medium');
+});

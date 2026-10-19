@@ -381,3 +381,46 @@ test('REGRESSION a retired carrier dir is pruned whatever filename shape it hold
     'a hand-written file in a retired dir survives — the marker is the safety property, not the name',
   );
 });
+
+test('a re-run of init never rewrites the config it does not own', async (t) => {
+  // `init` used to write the config through `writeGenerated`, which replaces content whenever it differs,
+  // under a comment claiming the opposite. Measured consequence: `init` → `config --goal on` → `init`
+  // wrote `{"version": 2}`, and the **next `sync` deleted `.pi/extensions/engram-goal.ts`** because
+  // `goalEnabled(...)` was then false. A re-run silently disarmed the goal engine.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await runInit({ root: sb.root });
+  await sb.write(
+    '.engram/config.json',
+    JSON.stringify({ version: 2, goal: { enabled: true }, limits: { livenessMs: 60_000 } }),
+  );
+
+  const again = await runInit({ root: sb.root, force: true });
+  assert.equal(again.files.find((f) => f.path === '.engram/config.json')?.action, 'kept');
+  const raw = JSON.parse(await sb.read('.engram/config.json')) as Record<string, unknown>;
+  assert.deepEqual(raw.goal, { enabled: true }, 'the goal opt-in survives a re-init');
+  assert.deepEqual(raw.limits, { livenessMs: 60_000 }, 'and so do the limits');
+
+  // And the carrier it protects is still there after the sync that follows.
+  await runSync(sb.root);
+  assert.equal(await sb.exists('.pi/extensions/engram-goal.ts'), true, 'a re-init must not disarm the goal engine');
+});
+
+test('the legacy-config upgrade keeps the limits block', async (t) => {
+  // `writeConfig(root, goal, limits?)` emits `limits` only when given one, and the migration passed only
+  // the opt-in — so the first `sync` erased a tuned liveness deadline that a v1 file is a legal place to
+  // have written.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await runInit({ root: sb.root });
+  await sb.write(
+    '.engram/config.json',
+    JSON.stringify({ version: 1, tools: ['pi'], goal: { enabled: true }, limits: { livenessMs: 60_000 } }),
+  );
+
+  await runSync(sb.root);
+  const raw = JSON.parse(await sb.read('.engram/config.json')) as Record<string, unknown>;
+  assert.equal(raw.version, 2);
+  assert.deepEqual(raw.goal, { enabled: true });
+  assert.deepEqual(raw.limits, { livenessMs: 60_000 });
+});

@@ -105,9 +105,12 @@ function baseName(file: string): { date: string; topic: string } {
 }
 
 function titleOf(content: string, fallback: string): string {
-  const h1 = /^#\s+(.+)$/m.exec(content);
-  if (!h1?.[1]) return fallback;
-  return h1[1].replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+  // Searched over parsed lines, not the raw text: a decision whose first block is a fenced snippet whose
+  // opening line is `# install deps` had that line published as its title in BINDING.
+  const h1 = contentLines(content).find((l) => !l.inert && l.heading === 1);
+  if (h1 === undefined) return fallback;
+  const text = (HEADING_RE.exec(h1.text)?.[2] ?? '').replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+  return text || fallback;
 }
 
 const STATUS_LINE_RE = /^[^\S\n]*\**[^\S\n]*(?:status|state)\**[^\S\n]*:[^\S\n]*(.*)$/im;
@@ -142,8 +145,24 @@ export function decisionStatus(content: string): DecisionStatus {
   return 'REJECTED';
 }
 
+/** The pitfall template's own header line: `**Severity:** 🟠 medium · **Date:** …`. */
+const SEVERITY_LINE_RE = /^[^\S\n]*\**\s*severity\**\s*:[^\S\n]*(.*)$/im;
+
+/**
+ * A pitfall's severity, from its `Severity:` header.
+ *
+ * `STATUS_LINE_RE` matches `status:`/`state:` **anywhere**, and looking for the emoji only inside that
+ * one captured line meant a real pitfall was labelled `unknown`: this repository's own
+ * `priority-is-not-render-order.md` has `**Severity:** 🟠 medium` (which that regex does not match —
+ * "Severity" is not "status") plus a fenced `state: …` further down (which it does). The consequence is
+ * not cosmetic: `SEV_RANK` sorts pitfalls by severity, so a medium pitfall became the first one evicted
+ * when the budget trims PITFALLS, and `--json`'s `severity` field was wrong.
+ *
+ * A whole-document fallback is kept, because a hand-written case file may put the emoji on its title
+ * line instead of in a `Severity:` field — the template is a shape, not a requirement.
+ */
 function severityOf(content: string): PitfallEntry['severity'] {
-  const header = STATUS_LINE_RE.exec(content)?.[1] ?? content;
+  const header = SEVERITY_LINE_RE.exec(content)?.[1] ?? content;
   const m = /🔴\s*high|🟠\s*medium|🟡\s*low/i.exec(header);
   if (!m?.[0]) return 'unknown';
   if (/high/i.test(m[0])) return 'high';
@@ -506,12 +525,16 @@ export interface CompactResult {
  */
 export function compactCurrentTask(content: string): CompactResult {
   const lines = content.split('\n');
+  // Inert lines are skipped for the same reason every other parser here skips them: a checked box inside
+  // a fenced example or a multi-line HTML comment is documentation, not a milestone — moving it put an
+  // example in the archive and made `doctor` report a completed milestone that never existed.
+  const inert = new Set(contentLines(content).flatMap((l, i) => (l.inert ? [i] : [])));
   const moved: string[] = [];
   const kept: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
-    if (!/^- \[[xX]\]\s/.test(line) || isPlaceholder(line)) {
+    if (inert.has(i) || !/^- \[[xX]\]\s/.test(line) || isPlaceholder(line)) {
       kept.push(line);
       continue;
     }
@@ -527,12 +550,17 @@ export function compactCurrentTask(content: string): CompactResult {
   if (moved.length === 0) return { currentTask: content, moved: [], movedCount: 0 };
 
   const movedCount = moved.filter((l) => /^- \[[xX]\]/.test(l)).length;
-  const pointer = `${POINTER_PREFIX}${movedCount} completed milestone(s) archived in ${ARCHIVE_PATH} — read it before asking "did we already try that?"_`;
+  // The count **accumulates**. Replacing it with this run's number made a file whose pointer said `2`
+  // claim `1` after one more milestone was added, while the archive held three.
+  const existingPointer = content.split('\n').find((l) => l.startsWith(POINTER_PREFIX));
+  const alreadyArchived = Number(/^(\d+)/.exec(existingPointer?.slice(POINTER_PREFIX.length) ?? '')?.[1] ?? 0);
+  const total = Number.isFinite(alreadyArchived) ? alreadyArchived + movedCount : movedCount;
+  const pointer = `${POINTER_PREFIX}${total} completed milestone(s) archived in ${ARCHIVE_PATH} — read it before asking "did we already try that?"_`;
 
   // The pointer goes at the **end of the `## Checklist` section**, which is where the entries came from.
   // Placing it before the next heading of any name put it above `## Goal` — the first thing a reader sees
   // would have been a note about history.
-  const out = collapseBlankRuns(kept);
+  const out = collapseBlankRunsIn(kept, 'Checklist');
   if (out.some((l) => l.startsWith(POINTER_PREFIX))) {
     // A previous run already left a pointer: update its count rather than adding a second one.
     return {
@@ -572,11 +600,30 @@ function endOfChecklistSection(lines: string[]): number {
   return lines.length;
 }
 
-/** Collapse runs of blank lines to one, so removing entries does not leave holes. */
-function collapseBlankRuns(lines: string[]): string[] {
+/**
+ * Collapse runs of blank lines to one **inside one section only**.
+ *
+ * Whole-file collapsing rewrote content it was not asked to touch — two consecutive blank lines inside a
+ * fenced block in `CURRENT_TASK.md` were silently merged by the first `--fix`. The removals happen in
+ * `## Checklist`, so the tidy-up is scoped there.
+ */
+function collapseBlankRunsIn(lines: string[], sectionName: string): string[] {
+  const start = lines.findIndex((l) => new RegExp(`^##\\s+${sectionName}\\b`, 'i').test(l));
+  if (start < 0) return lines;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i] ?? '')) {
+      end = i;
+      break;
+    }
+  }
   const out: string[] = [];
-  for (const line of lines) {
-    if (line.trim() === '' && (out[out.length - 1] ?? '').trim() === '') continue;
+  let prevBlank = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const blank = line.trim() === '' && i > start && i < end;
+    if (blank && prevBlank) continue;
+    prevBlank = blank;
     out.push(line);
   }
   return out;

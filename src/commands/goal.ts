@@ -797,6 +797,14 @@ export async function runGoalHandoff(opts: GoalHandoffOptions): Promise<GoalCliR
       // No recorded predecessor: the baton cannot be returned, so say so rather than pretend.
       lines.push('  the baton could not be returned — no predecessor was recorded');
     }
+    // The window is closed for the same reason a failed *start* closes it: the successor never learned
+    // what it is for, its `session_start` reconcile has already run, and every later event it sends is
+    // refused as a non-holder with the refusal reaching nobody. The useful information is the reason, not
+    // the window.
+    if (tab !== null) {
+      const closed = await herdrJson(herdrTabCloseArgs(tab), deps);
+      lines.push(closed.ok ? `  window ${tab} closed again` : `  window ${tab} could not be closed: ${closed.detail}`);
+    }
     return { exitCode: 1, lines, warnings: [`${pane} holds the baton but never received the brief`] };
   }
   lines.push(`  delivered: ${delivered.detail}`, '  this session must stop driving: the baton is not yours any more');

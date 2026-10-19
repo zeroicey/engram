@@ -194,7 +194,6 @@ export function parseGoalRecord(raw: string): { record: GoalRecord | null; error
             condition,
             requestedAt: str(wakeRaw.requestedAt) ?? '',
             deadlineAt: str(wakeRaw.deadlineAt) ?? '',
-            handled: wakeRaw.handled === true,
           }
         : null,
     wakeSeq: num(parsed.wakeSeq),
