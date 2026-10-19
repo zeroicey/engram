@@ -143,14 +143,22 @@ is what lets a project like `research` own its own partitions while this is buil
       reverses it). What has *not* been tested is a day of ordinary development under a live goal
 - [ ] **Run one real multi-hour goal.** The commit-at-settlement rule, the traceability promise and
       the 24h liveness deadline have only been reasoned about — the biggest untested assumption left
+- [x] **2026-10-19 the bank was audited across all 7 adopters, and `dump` no longer lies.** Four
+      defects, one of them mine and universal: a single-line HTML comment made *every* scaffolded
+      repo's `## Goal` invisible to the parser. `dump` now distinguishes **absent** headings
+      (`missing:` — `clip`/`research`/`teleport` rewrote CURRENT_TASK into prose and lost
+      `project:`/`next:`/`branch:`) from **empty** ones (`empty:` — two byte-identical untouched
+      templates, one 16 days old, previously indistinguishable from a live project). Resolved blockers
+      (`~~…~~` / ✅ / [x]) no longer publish as live ones.
 - [ ] **Publish 0.5.0** (human, 2FA). The Pi-only break has never been installed by anyone
 
 ## Code state
 
-Branch `main`. `src/` is 33 TypeScript modules, `test/` 16 suites, 321 tests, zero runtime deps.
+Branch `main`. `src/` is 33 TypeScript modules, `test/` 16 suites, 324 tests, zero runtime deps.
 Build: `npm run build` → `build/`; tests run against compiled output on purpose. `engram dump`
 renders 1414 B here (budget 1500) with the active goal, so the elastic content still fits — but the
-headroom is 86 B, and a long `done_when` or a second blocker would not fit. **One tool adapter: `pi`.** The config is v2 (`goal` opt-in only, now `on` in
+headroom is 86 B, and a long `done_when` or a second blocker would not fit. The same file across the
+seven repositories that adopted the bank: 1308–1488 B, i.e. several are within 12 B of the ceiling. **One tool adapter: `pi`.** The config is v2 (`goal` opt-in only, now `on` in
 this repo) and `core/config.ts` no longer imports `adapters/`, so the layering allowlist is down to a
 single entry. 2026-10-18 added two leaf modules: `src/templates/systemd.ts`
 (the unit, a pure string) and `src/core/herdr.ts` (the delivery hop, all I/O injectable). `core/` now
