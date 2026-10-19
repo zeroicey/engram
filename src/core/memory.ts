@@ -109,7 +109,12 @@ function titleOf(content: string, fallback: string): string {
   // opening line is `# install deps` had that line published as its title in BINDING.
   const h1 = contentLines(content).find((l) => !l.inert && l.heading === 1);
   if (h1 === undefined) return fallback;
-  const text = (HEADING_RE.exec(h1.text)?.[2] ?? '').replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+  // `cleanInline`, not a bare `.replace(/[*_`]/g, '')`. The heading of a real case file is prose that
+  // names real things — `# pos_weight=30 在 swt/cnx 上会坍缩` and `# _ 前缀的 run 是冒烟测试` — and the
+  // bare replace published them as `posweight=30 …` and `前缀的 run …`. A title is the only part of a
+  // pitfall most readers ever see (PITFALLS shows the title and a path), so mangling it in the digest
+  // is how a correct case file gets skimmed past.
+  const text = cleanInline(HEADING_RE.exec(h1.text)?.[2] ?? '');
   return text || fallback;
 }
 

@@ -714,3 +714,23 @@ test('a bank whose pitfalls all fit says nothing about omissions', async (t) => 
   const md = await runCli(['dump', '--root', sb.root]);
   assert.ok(!/more — \.ai\/pitfalls/.test(md.out), 'no phantom omission line when nothing was capped');
 });
+
+test('REGRESSION a titled identifier keeps its underscores in the digest', async (t) => {
+  // `titleOf` stripped every `_` from a heading, so a pitfall titled
+  // `# pos_weight=30 在 swt/cnx 上会坍缩` was published in PITFALLS as `posweight=30 …`.
+  // The title is the only part of a case file most readers ever see, so mangling it is how a correct
+  // pitfall gets skimmed past. Same root cause as `cleanInline`; same fix — go through it.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  await sb.write(
+    '.ai/pitfalls/cases/posw.md',
+    // Written in an inline code span: that is the shape a heading *must* use to carry an identifier.
+    // `cleanInline` preserves spans and still strips a bare `_` as emphasis, so `# pos_weight=30 ...`
+    // unquoted is indistinguishable from `# _emphasis_`. Stated here so the rule is explicit.
+    '# `pos_weight=30` collapses the trunk\n\n**Severity:** 🔴 high · **Date:** 2026-10-01\n\nSymptom.\n',
+  );
+  const out = await runCli(['dump', '--root', sb.root, '--max-bytes', '6000']);
+  assert.match(out.out, /pos_weight=30 collapses/, 'a code-spanned identifier is published as written');
+  assert.ok(!/posweight=30/.test(out.out), 'and not with the underscore stripped');
+});
