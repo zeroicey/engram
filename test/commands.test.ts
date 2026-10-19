@@ -368,7 +368,11 @@ test('REGRESSION a retired carrier dir is pruned whatever filename shape it hold
   await sb.write('.github/prompts/handoff.prompt.md', marker);
   await sb.write('.github/prompts/audit.prompt.md', marker);
   await sb.write('.github/prompts/mine.prompt.md', 'hand-written, no marker\n');
-  await sb.write('.gemini/commands/handoff.toml', marker);
+  // The real Gemini carrier opened with `# `, because `#` is TOML's comment marker. This test used to
+  // write the bare HTML comment, which is a shape the generator never emits — so it stayed green while
+  // the anchored `^<!--` regex failed to recognise every genuine `.toml` carrier and left them behind
+  // in every repository that had ever used that adapter.
+  await sb.write('.gemini/commands/handoff.toml', `# ${marker} — do not edit; run \`engram sync\`\n`);
 
   const res = await runSync(sb.root);
 

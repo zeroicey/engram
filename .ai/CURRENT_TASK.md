@@ -1,6 +1,6 @@
 # Current task
 
-**Status:** 🟡 Pi-only (0.5.0, unpublished) · goal engine M1–M4 done; L1+L2+L3 wake transports live; **handoff opens a window in this space** · **Updated:** 2026-10-18
+**Status:** 🟡 Pi-only (0.5.0, unpublished) · goal engine M1–M4 done; L1+L2+L3 wake transports live; **handoff opens a window in this space** · **Updated:** 2026-10-20
 
 ## Goal
 
@@ -9,6 +9,18 @@ machine-checkable `done_when`, may wait without burning tokens, and is never end
 claim of success.
 
 ## Checklist
+
+- [x] **2026-10-20 the reinstall check found the engine disabled by its own default.** `sync` baked the
+      bare string `engram` into every carrier, so on a host without a global install the first
+      `session_start` printed `cannot run engram` and **the goal engine recorded nothing for the whole
+      session** — while `node build/src/cli.js` worked and `doctor`/`sync`/372 tests were all green.
+      The workaround (`ENGRAM_BIN`) was documented, which made a broken default read as a config
+      error. `sync` now bakes the argv that is actually running in as a fallback, and the field is
+      required so it cannot regress to a default. Same check found `.gemini/commands/*.toml` surviving
+      every `sync`: the marker regex was anchored to column 0, so no TOML carrier was ever recognised,
+      and the regression test had been written against a shape the generator never emits. Both live
+      in `.ai/pitfalls/cases/`. Verified end-to-end on this repo **and** on a second git project with
+      `PATH=/nonexistent-bin` and no `ENGRAM_BIN`: the report reached the engine.
 
 - [ ] `research` has not declared `.ai/sections.json` yet — the mechanism is ready, they decide
 
@@ -38,8 +50,8 @@ _Completed milestones: 44 archived in `.ai/sessions/_milestone-log-archive.md` �
 
 ## Code state
 
-Branch `main`. 33 modules, 19 suites, 367 tests, zero runtime deps. One adapter (`pi`), config v2 with
-`goal` on. Module map and layering: `.ai/ARCHITECTURE.md`.
+Branch `main`. 33 modules, 19 suites, **372 tests**, zero runtime deps. One adapter (`pi`), config v2
+with `goal` on. Module map and layering: `.ai/ARCHITECTURE.md`.
 
 ## Blockers
 
@@ -108,17 +120,25 @@ Branch `main`. 33 modules, 19 suites, 367 tests, zero runtime deps. One adapter 
   against its owner (`TASKS.md` → `.ai/goal/<id>/`), not the repo root.
 - `.ai/pitfalls/cases/fingerprint-strips-underscores.md` — `cleanInline()` deletes `_`, so an
   identifier written in `CURRENT_TASK.md` loses it. Spell it without underscores.
+- `.ai/pitfalls/cases/a-carrier-that-baked-in-a-binary-no-machine-had.md` — `sync` baked a bare
+  `engram` into every carrier, so a host without a global install ran the engine **silently unrecorded**.
+  Ask of every generated artefact: does it name an environment fact the generator could have observed?
+- `.ai/pitfalls/cases/a-test-fixture-the-generator-never-emits.md` — the same reinstall check found the
+  retired-sink pruner recognising no `.toml` carrier at all, because the test fixture was typed by hand
+  in a shape the generator never produces. Fixtures come from the code under test.
 
 ## Next action
 
-**Code shipped** (`79761a3`, `origin/main` matches, no tag, no publish). The machine is being reinstalled;
-tracked files are in git, `build/`+`node_modules/` rebuild via `npm install && npm test`.
+**Reinstall check done (2026-10-20)** — the machine moved, and TWO defects it had been hiding are fixed
+(see the first checklist item). `npm test` 372, `typecheck` clean, `doctor` healthy, `sync` clean,
+`dump` 1367 B. **Not yet committed.**
 
-**Next session starts by reading
-[`sessions/2026-10-19-post-reinstall-handoff.md`](sessions/2026-10-19-post-reinstall-handoff.md)** — it opens
-with the five commands that must pass before anything is believed on a fresh machine.
+**Then the user's next instruction stands:** a long **unattended run on a real project**. Before it
+starts, the target project needs to be brought up to date with this checkout (their `.ai/` bank and
+their generated carriers were written when the baked binary was `engram`), so `engram sync` must be run
+there — from this build, so the fallback is recorded.
 
-1. **Re-verify first.** `npm test` must be 367; if not, the checkout is not `79761a3`.
+1. **Re-verify first.** `npm test` must be **372**; if not, the checkout is not the current `HEAD`.
 2. **Then the user's instruction, verbatim:** 新的对话直接开始监控新的，这就是实际的项目了 — a long
    **unattended run on a real project**, not more review of this one.
 3. **Ask which project** if unnamed. The trial was waived this stage, so engram has never run on an

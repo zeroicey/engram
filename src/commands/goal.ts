@@ -852,6 +852,59 @@ export async function resolveEngramCommand(opts: EngramCommandOptions = {}): Pro
 }
 
 /**
+ * The argv to bake into the goal extension as its *fallback*, so a checkout needs no `PATH`.
+ *
+ * Why this exists: `sync` baked the bare string `'engram'` into every carrier it wrote, which is
+ * right for an installed package and wrong for the two situations this project is actually used in.
+ * On a fresh host with the checkout at `/data/dev/engram`, pi's `session_start` produced
+ * `engram-goal: cannot run engram` and the goal engine recorded nothing for the whole session — while
+ * `node build/src/cli.js` worked perfectly. `ENGRAM_BIN` was the documented workaround and it requires
+ * the human to remember an env var on every boot; a generated file that cannot start the CLI that
+ * generated it is a broken default, not a configuration error.
+ *
+ * The value is *only* a fallback: the extension tries `ENGRAM_BIN`/`engram` first and retries with
+ * this argv on a spawn failure (see `goal-extension.ts`). So a global install is never second-guessed.
+ *
+ * Returns `[]` — meaning "no fallback, stay loud" — when the running CLI is not a real path on this
+ * machine (a test harness, `node -e`, a bundled shim), because guessing would be worse than failing:
+ * the wrong path belongs to another project.
+ */
+export async function resolveExtensionFallback(
+  opts: EngramCommandOptions = {},
+): Promise<string[]> {
+  const env = opts.env ?? process.env;
+  // An explicit ENGRAM_BIN is already the primary at run time; baking it in as well would make a
+  // stale env var outrank the file the user just `sync`'d.
+  const explicit = env.ENGRAM_BIN?.trim();
+  if (explicit !== undefined && explicit !== '') return [];
+  const argv1 = opts.argv1 ?? process.argv[1] ?? '';
+  if (argv1 === '') return [];
+  const bin = path.resolve(argv1);
+  const exists = await (opts.isExecutable ??
+    (async (file: string) => {
+      try {
+        await fs.access(file, constants.R_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }))(bin);
+  if (!exists) return [];
+  // The same argv shape the systemd unit uses, for the same reason: `tsc` emits 0644, so a checkout
+  // must be run through `node` rather than exec'd.
+  const canExec = await (opts.isExecutable ??
+    (async (file: string) => {
+      try {
+        await fs.access(file, constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }))(bin);
+  return engramCommand(bin, canExec, opts.node ?? process.execPath);
+}
+
+/**
  * Emit the systemd unit that runs a long job and wakes this goal when it exits (L3).
  *
  * `--write` is not the default on purpose: this command's normal output is a *file to read*, and a

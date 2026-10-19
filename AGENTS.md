@@ -61,7 +61,7 @@ Dependency rule: `core/` imports nothing from `commands/`, `adapters/` or `templ
 
 ## Definition of done
 
-1. `npm test` passes (256 tests today, `node --test` on compiled output).
+1. `npm test` passes (372 tests today, `node --test` on compiled output).
 2. `npm run typecheck` is clean.
 3. `node build/src/cli.js dump` stays inside its byte budget.
 4. Behaviour that the memory bank records — an invariant, a decision, a pitfall — is written back

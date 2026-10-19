@@ -12,7 +12,20 @@ import { spawnSync } from "node:child_process";
 
 // ENGRAM_BIN wins at run time so a development checkout (and a machine where engram is not on PATH)
 // can point the extension at a binary without regenerating the file.
+//
+// ENGRAM_ARGV, not ENGRAM: the value may be a multi-element argv ([node, /abs/build/src/cli.js] for a
+// checkout). Interpolating that into a spawn *string* is how 'node /path/cli.js' turns into one
+// filename with a space in it and ENOENT — the same class of bug as the missing binary itself.
 const ENGRAM = process.env.ENGRAM_BIN || "engram";
+const ENGRAM_FALLBACK = ["/data/dev/engram/build/src/cli.js"];
+// Resolved once, on the first call, and remembered: 'ENGRAM_FALLBACK' is only tried after the primary
+// has actually failed, so an installed binary is never second-guessed.
+let engramArgv = null;
+function engramCommandFor() {
+  if (engramArgv !== null) return engramArgv;
+  engramArgv = [ENGRAM];
+  return engramArgv;
+}
 
 const REMINDER_PERCENT = 85;
 
@@ -26,12 +39,28 @@ const CONTEXT_REMINDER =
  * or a newline cannot turn into a second command.
  */
 let unreachable = false;
-function call(args) {
-  const res = spawnSync(ENGRAM, args, {
+function runArgv(argv, args) {
+  const [cmd, ...pre] = argv;
+  return spawnSync(cmd, pre.concat(args), {
     encoding: "utf8",
     timeout: 11 * 60 * 1000,
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+function call(args) {
+  let res = runArgv(engramCommandFor(), args);
+  // A spawn *failure* (ENOENT/EACCES) means this argv cannot run at all, which is the one situation a
+  // fallback can improve: retry with the argv 'sync' baked in, and keep it only if that itself runs.
+  // A non-zero exit is deliberately NOT retried — the CLI ran and answered, which is never a reason to
+  // call a second binary.
+  if (res.error && ENGRAM_FALLBACK.length > 0) {
+    const retry = runArgv(ENGRAM_FALLBACK, args);
+    if (!retry.error) {
+      engramArgv = ENGRAM_FALLBACK;
+      res = retry;
+    }
+  }
   // A missing binary, a crash, and a non-zero exit with no stdout are the same *loud* state: silently
   // doing nothing is how a goal engine looks installed while every settlement goes unrecorded. The
   // empty-stdout case is the gap a crash slipped through.

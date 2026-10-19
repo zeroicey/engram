@@ -17,6 +17,7 @@ import { TOOLS, ruleFiles, RETIRED_RULE_FILES, type ToolDef } from '../adapters/
 import { commandNameFor, materialize } from '../adapters/skills.js';
 import { pruneStaleCarriers } from './prune-carriers.js';
 import { syncGoalCarrier, type GoalCarrierResult } from './goal-carrier.js';
+import { resolveExtensionFallback, type EngramCommandOptions } from './goal.js';
 import { GOAL_EXTENSION_PATH } from '../templates/goal-extension.js';
 import { CONFIG_PATH, goalEnabled, isLegacyConfig, readConfig, readConfigDetailed, writeConfig } from '../core/config.js';
 import { VERSION } from '../version.js';
@@ -309,7 +310,25 @@ export interface SyncResult {
   goalEnabled: boolean;
 }
 
-export async function runSync(root: string, dryRun = false): Promise<SyncResult> {
+/**
+ * Injected by tests, and by nothing else.
+ *
+ * The fallback argv baked into the carrier depends on *how* the CLI was invoked (`node build/src/cli.js`
+ * vs a global `engram`), which the test process cannot control: under `npm test` `process.argv[1]` is
+ * the runner, not a CLI. Threading it through an option is what lets both branches be asserted instead
+ * of one being asserted and the other assumed.
+ */
+export interface SyncOptions {
+  /** Overrides the fallback-argv probe; see `resolveExtensionFallback`. */
+  commandOptions?: EngramCommandOptions;
+}
+
+export async function runSync(
+  root: string,
+  dryRun = false,
+  opts: SyncOptions = {},
+): Promise<SyncResult> {
+  const goalCommandOptions = opts.commandOptions ?? {};
   const warnings: string[] = [];
 
   // `loadMemory` is no longer needed here: both facts this used to supply (`bank.exists` and the
@@ -379,6 +398,12 @@ export async function runSync(root: string, dryRun = false): Promise<SyncResult>
   // Refuse to change the carrier and say why; the project decides whether to repair the file.
   const goalConfig = await readConfigDetailed(root);
   const wantsGoal = goalEnabled(goalConfig.config);
+  // What the carrier falls back to when the resolved `engram` cannot be spawned. Computed only when
+  // the engine is enabled: it is a filesystem probe, and a project that never turned the goal engine
+  // on must not pay for it on every `sync`.
+  const engramFallback = wantsGoal
+    ? await resolveExtensionFallback(goalCommandOptions)
+    : [];
   const goalCarrier = goalConfig.broken
     ? {
         action: 'unchanged' as const,
@@ -389,10 +414,22 @@ export async function runSync(root: string, dryRun = false): Promise<SyncResult>
     : await syncGoalCarrier(
         root,
         wantsGoal,
-        { engramBin: 'engram', version: VERSION, reminderPercent: CONTEXT_REMINDER_PERCENT },
+        {
+          engramBin: 'engram',
+          engramFallback,
+          version: VERSION,
+          reminderPercent: CONTEXT_REMINDER_PERCENT,
+        },
         dryRun,
       );
   if (goalCarrier.note) warnings.push(`${goalCarrier.path}: ${goalCarrier.note}`);
+  // Silent otherwise, and that silence is the failure this whole path exists to prevent: a carrier
+  // that guessed no binary is a carrier that will print `cannot run engram` on the next boot.
+  if (wantsGoal && !goalConfig.broken && engramFallback.length === 0) {
+    warnings.push(
+      `${GOAL_EXTENSION_PATH}: no fallback CLI was recorded, so the goal engine needs \`engram\` on PATH or ENGRAM_BIN — run \`sync\` from an installed engram to bake one in`,
+    );
+  }
 
   // Rule files left behind by a removed adapter are reported, not deleted: `init` preserves whatever
   // body a human added, so there is no marker that would make deletion safe. Silence would be worse

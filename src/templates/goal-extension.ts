@@ -32,6 +32,22 @@
 export interface GoalExtensionContext {
   /** The `engram` command the generated file should call (`engram` on PATH by default). */
   engramBin: string;
+  /**
+   * Fallback argv used when `engramBin` cannot be spawned.
+   *
+   * `engram` on PATH is the correct default for an *installed* package, and it is wrong for the two
+   * situations this project is actually used in: a development checkout, and a machine where the
+   * tarball was never `npm i -g`'d. Both produced the same silent outcome — `spawnSync` returned
+   * `ENOENT`, the first `session_start` printed `cannot run engram`, and the goal engine recorded
+   * nothing for the whole session. Reproduced on a fresh host on 2026-10-20 with the binary present
+   * and working at `<root>/build/src/cli.js`.
+   *
+   * The value `sync` bakes in is the exact argv that was running when the file was generated
+   * (`node <abs>/build/src/cli.js`), so a checkout carries its own CLI address and needs no `PATH`
+   * and no `ENGRAM_BIN`. Empty means "no fallback" — an install with nothing nearby stays loud, which
+   * is the honest state, rather than guessing at a path that may belong to another project.
+   */
+  engramFallback: string[];
   /** Recorded so a reader can tell which version generated the file. */
   version: string;
   /**
@@ -65,7 +81,20 @@ import { spawnSync } from "node:child_process";
 
 // ENGRAM_BIN wins at run time so a development checkout (and a machine where engram is not on PATH)
 // can point the extension at a binary without regenerating the file.
+//
+// ENGRAM_ARGV, not ENGRAM: the value may be a multi-element argv ([node, /abs/build/src/cli.js] for a
+// checkout). Interpolating that into a spawn *string* is how 'node /path/cli.js' turns into one
+// filename with a space in it and ENOENT — the same class of bug as the missing binary itself.
 const ENGRAM = process.env.ENGRAM_BIN || ${JSON.stringify(ctx.engramBin)};
+const ENGRAM_FALLBACK = ${JSON.stringify(ctx.engramFallback)};
+// Resolved once, on the first call, and remembered: 'ENGRAM_FALLBACK' is only tried after the primary
+// has actually failed, so an installed binary is never second-guessed.
+let engramArgv = null;
+function engramCommandFor() {
+  if (engramArgv !== null) return engramArgv;
+  engramArgv = [ENGRAM];
+  return engramArgv;
+}
 
 const REMINDER_PERCENT = ${ctx.reminderPercent};
 
@@ -79,12 +108,28 @@ const CONTEXT_REMINDER =
  * or a newline cannot turn into a second command.
  */
 let unreachable = false;
-function call(args) {
-  const res = spawnSync(ENGRAM, args, {
+function runArgv(argv, args) {
+  const [cmd, ...pre] = argv;
+  return spawnSync(cmd, pre.concat(args), {
     encoding: "utf8",
     timeout: 11 * 60 * 1000,
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+function call(args) {
+  let res = runArgv(engramCommandFor(), args);
+  // A spawn *failure* (ENOENT/EACCES) means this argv cannot run at all, which is the one situation a
+  // fallback can improve: retry with the argv 'sync' baked in, and keep it only if that itself runs.
+  // A non-zero exit is deliberately NOT retried — the CLI ran and answered, which is never a reason to
+  // call a second binary.
+  if (res.error && ENGRAM_FALLBACK.length > 0) {
+    const retry = runArgv(ENGRAM_FALLBACK, args);
+    if (!retry.error) {
+      engramArgv = ENGRAM_FALLBACK;
+      res = retry;
+    }
+  }
   // A missing binary, a crash, and a non-zero exit with no stdout are the same *loud* state: silently
   // doing nothing is how a goal engine looks installed while every settlement goes unrecorded. The
   // empty-stdout case is the gap a crash slipped through.
