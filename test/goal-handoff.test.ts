@@ -206,9 +206,15 @@ test('a handoff opens a window, starts pi, transfers the baton, then prompts', a
     assert.equal(herdr.calls[0]?.[2], pane, 'the holder\'s pane is read for its workspace');
     assert.deepEqual(herdr.calls[1]?.slice(2, 4), ['--workspace', 'w13'], 'the successor lands in the same workspace');
     assert.deepEqual(herdr.calls[1]?.slice(4, 6), ['--cwd', sb.root]);
-    assert.match(herdr.calls[1]?.join(' ') ?? '', /--label goal-2026-10-18-ship-m4/, 'a window with no name is a number in the tab bar');
+    // Date-agnostic: the goal id is dated *today*, and the fixture's `2026-10-18` made this test fail on
+    // the 19th. Assert the shape, not the calendar.
+    assert.match(
+      herdr.calls[1]?.join(' ') ?? '',
+      /--label goal-\d{4}-\d{2}-\d{2}-ship-m4/,
+      'a window with no name is a number in the tab bar',
+    );
     assert.ok(herdr.calls[1]?.includes('--no-focus'), 'a handoff must not steal the keyboard');
-    assert.equal(herdr.calls[2]?.[2], 'goal-2026-10-18-ship-m4');
+    assert.match(String(herdr.calls[2]?.[2]), /^goal-\d{4}-\d{2}-\d{2}-ship-m4$/, 'the agent name matches the tab label');
     assert.equal(herdr.calls[3]?.[2], 'wN:p1M', 'the brief goes to the pane that was just created');
     assert.match(herdr.calls[3]?.[3] ?? '', /taking the baton for the long-running goal/);
 

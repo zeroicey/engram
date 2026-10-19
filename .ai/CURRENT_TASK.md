@@ -207,7 +207,8 @@ other's type.
   writes. Ask of any transport: if delivery fails here, what still knows the goal is waiting?
 - `.ai/pitfalls/cases/a-cleared-wake-left-its-timer-armed.md` — a transition that sets `wake: null`
   must emit `clear-wake` in the same step, or the record is right and the host is still armed. Ask it of
-  every branch that writes the field.
+  every branch that writes the field, and ask it of every `pending*` field too: `pendingWakes` was never
+  drained, so `goal status` re-reported wakes the human had already read.
 - `.ai/pitfalls/cases/a-refused-event-read-as-success.md` — an `ignore` effect had no reader, so
   `ok: true, reason: null` let `/goal` print "goal woken" for a wake the engine refused. An effect a host
   cannot see is a decision the engine did not make.

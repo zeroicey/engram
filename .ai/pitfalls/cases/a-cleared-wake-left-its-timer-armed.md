@@ -30,6 +30,18 @@ this entry.
 Both paths now emit `clear-wake` for the token they drop, and `clear-wake` is matched by token on the
 host side so `[clear-wake old, schedule-wake new]` cannot cancel the new timer in either order.
 
+## A fourth instance of the same class, found months later in the same field
+
+`pendingWakes` — the record of wakes that arrived while a human was the blocker — was **never drained**.
+`onRunStarted` cleared `unreportedSettles` and `wake` when a human answered, and left the accumulated
+wakes, so `goal status` kept saying `3 wake(s) arrived while blocked` about wakes from unrelated
+incidents the human had already been told about.
+
+It is the same question as `wake`/`clear-wake`, one field over: **a `pending*` field needs the
+transition that retires it, on every path** — and here the answer is "the human's answer", i.e.
+`run-started` out of `blocked`. Now drained there, with a test that also proves a *later* blockage starts
+from empty instead of re-reporting the old wakes.
+
 ## Guard
 
 - `test/goal.test.ts` — "a report that releases a wait cancels its timer" asserts the effect list, not

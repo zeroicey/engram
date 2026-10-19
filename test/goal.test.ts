@@ -582,3 +582,22 @@ test('an unparseable timestamp does not throw', () => {
   assert.equal(r.view.record.status, 'waiting');
   assert.equal(r.view.record.wake?.deadlineAt, 'not-a-date', 'the caller string is kept rather than crashing');
 });
+
+test('wakes that arrived while blocked are drained when the human answers', () => {
+  // `pendingWakes` exists so a wake during `blocked` is not silently lost. Nothing drained it, so the
+  // count accumulated across every unrelated blockage and `goal status` kept saying "N wake(s) arrived
+  // while blocked" about wakes the human had already been told about. Same rule as `pendingHandoff`:
+  // every `pending*` field needs the transition that retires it, on every path.
+  const armed = record({ status: 'waiting', wake: { token: 'wake-1', condition: { kind: 'time', seconds: 60 }, requestedAt: T0, deadlineAt: hours(24), handled: false } });
+  const blocked = send(view(armed), { kind: 'report', now: hours(1), report: { status: 'blocked', reason: 'need a decision' } });
+  const wake1 = send(blocked.view, { kind: 'wake', now: hours(2), token: 'wake-1', reason: 'training finished' });
+  assert.equal(wake1.view.record.pendingWakes.length, 1, 'recorded, and escalated to the human');
+
+  const resumed = send(wake1.view, { kind: 'run-started', now: hours(3) });
+  assert.equal(resumed.view.record.pendingWakes.length, 0, 'the human answering starts a run, which reads them');
+  assert.equal(resumed.view.record.status, 'running');
+
+  // A later blockage starts from empty rather than reporting the old wakes again.
+  const blockedAgain = send(resumed.view, { kind: 'report', now: hours(4), report: { status: 'blocked', reason: 'other' } });
+  assert.equal(blockedAgain.view.record.pendingWakes.length, 0);
+});

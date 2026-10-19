@@ -453,7 +453,13 @@ function onRunStarted(record: GoalRecord, now: string, limits: GoalLimits): Goal
   if (record.status === 'blocked') {
     const effects: GoalEffect[] = [];
     if (record.wake) effects.push({ kind: 'clear-wake', token: record.wake.token });
-    return step(next(record, now, { status: 'running', wake: null, unreportedSettles: 0 }), effects);
+    // `pendingWakes` is drained here, and that is the whole point of the field. Wakes that arrived while
+    // a human was the blocker are news *for that blockage*: once the human's answer starts a run, they
+    // have been read (they were escalated, and `goal status` listed them). Leaving them set made the
+    // count accumulate across every later blockage, so `4 wake(s) arrived while blocked` described wakes
+    // from three unrelated incidents and the reader could not tell which were still unanswered. Same
+    // rule as `pendingHandoff`: ask which transition retires a `pending*` field, on every path.
+    return step(next(record, now, { status: 'running', wake: null, unreportedSettles: 0, pendingWakes: [] }), effects);
   }
   return step(record);
 }
