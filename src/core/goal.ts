@@ -537,7 +537,21 @@ function onSettled(view: GoalView, now: string, limits: GoalLimits): GoalStep {
     // deliberately repairs a hand-edited record (`claimedAt: str(...) ?? ''`), and `Date.parse('')` is
     // NaN — so the one input `isPast` exists to survive reached `.toISOString()` before `isPast` saw it.
     const claimedMs = Date.parse(record.pendingVerdict.claimedAt);
-    if (!Number.isFinite(claimedMs) || isPast(now, new Date(claimedMs + limits.livenessMs).toISOString())) {
+    // `claimedMs + limits.livenessMs` is the second unbounded `Date` in this file, and `isoOrNull` was
+    // added for the first one. A `livenessMs` above ~8.64e15 (or `Number.MAX_SAFE_INTEGER`, which is
+    // what a hand-edited config can carry) makes the sum an invalid time and `.toISOString()` throws
+    // `RangeError` **out of a reducer documented as total** — the identical shape as the
+    // `wakeOnSeconds: 1e15` bug, in a branch that fix did not reach. `isoOrNull` is the existing
+    // answer: `null` means "not representable", which is not a deadline that has passed.
+    const verdictDeadline = isoOrNull(claimedMs + limits.livenessMs);
+    // Two different "not a date" cases, and conflating them was the mistake in the first cut of this fix:
+    //
+    // - `claimedAt` unparseable → **stale**. That is the store's documented repair of a hand-edited
+    //   record, and escalating is what resolves it.
+    // - `claimedAt + livenessMs` past the Date range → **not stale**. A `livenessMs` that large means
+    //   "never expire"; escalating immediately would invert the setting it was given. Re-ask instead.
+    const stale = !Number.isFinite(claimedMs) || (verdictDeadline !== null && isPast(now, verdictDeadline));
+    if (stale) {
       return step(
         next(record, now, {
           pendingVerdict: null,

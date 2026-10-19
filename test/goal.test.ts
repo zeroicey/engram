@@ -729,6 +729,22 @@ test('an unparseable pendingVerdict timestamp escalates instead of throwing', ()
   assert.equal(r.view.record.blocker?.reason, 'a done claim was never answered by the gate');
 });
 
+test('an unrepresentable liveness deadline does not throw out of the reducer', () => {
+  // The same overflow as the `wakeOnSeconds: 1e15` bug, in the branch that fix did not reach:
+  // `onSettled`'s pending-verdict branch computed `new Date(claimedMs + limits.livenessMs)` and called
+  // `.toISOString()` unguarded. `limits.livenessMs` comes from `.engram/config.json`, so a hand-edited
+  // or hostile value above ~8.64e15 (or simply `Number.MAX_SAFE_INTEGER`) threw `RangeError: Invalid
+  // time value` out of a reducer documented as total — inside `agent_settled`, which takes the session
+  // with it. `isoOrNull` is the existing answer; `null` is "not representable", never "expired".
+  const pending = record({ pendingVerdict: { claimedAt: T0, claim: 'done' } });
+  for (const livenessMs of [8.64e15, 1e15, Number.MAX_SAFE_INTEGER]) {
+    const r = send(view(pending, brief()), { kind: 'settled', now: T0 }, { ...DEFAULT_LIMITS, livenessMs });
+    assert.equal(r.view.record.status, 'running', `livenessMs=${livenessMs} must not throw or escalate`);
+    // Still asked: an unrepresentable deadline is not a verdict, so the evaluator question is re-emitted.
+    assert.deepEqual(kinds(r.effects), ['evaluate']);
+  }
+});
+
 test('a failed verdict retires the wait and does not promote a blocked goal', () => {
   // The one transition that moved `status` away from `waiting` while neither setting `wake: null` nor
   // emitting `clear-wake`. Reachable with one documented verb: `report wait` (timer armed) → a human runs
