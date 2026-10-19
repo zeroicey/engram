@@ -29,6 +29,26 @@ engine.
 
 `git push` is authorised for this stage. `npm publish`, `git tag` and `git push --tags` are not.
 
+## Already launched by the predecessor: review round 2 is IN FLIGHT
+
+The predecessor launched the three-reviewer round just before handing off, so **do not launch it again**.
+The run is `11027d15-c489-4af7-b5d2-794874eb6ef6`. Its three child reports land as files:
+
+```
+/home/oicey/.pi/agent/sessions/--data-dev-engram--/subagent-artifacts/<child-run-id>_reviewer_output.md
+/tmp/pi-subagents-uid-1000/async-subagent-runs/11027d15-c489-4af7-b5d2-794874eb6ef6/status.json
+```
+
+Check whether they exist before starting anything. If they are not there yet, they are still being written —
+the briefs are long, so each child takes minutes. Read them with `grep -n '^### \|^## \|BLOCK\|PASS'` first
+rather than in full: each report is ~15 KB and the findings are what matter.
+
+The three briefs were: goal engine (`src/core/goal*.ts` + `src/core/git.ts`), host boundary
+(`src/templates/goal-extension.ts`, `src/core/herdr.ts`, `src/commands/goal.ts`, `src/templates/systemd.ts`,
+`src/cli.ts`), and memory bank (`src/core/memory.ts`, `fingerprint.ts`, `doctor.ts`, `src/commands/doctor.ts`,
+`dump.ts`, `config.ts`, `sections.ts`, `init.ts`). Each named the 25 fixes as the suspect and the same six
+constructions to attempt.
+
 ## Next action, in order
 
 ### 1. Review round 2, on the fixes themselves (not on the original code)
