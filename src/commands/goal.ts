@@ -1016,6 +1016,8 @@ export interface HostEventInput {
   /** `settled` | `run-started` | `wake` | `poll` | `reconcile` | `report` | `status` */
   event: string;
   sessionPath?: string;
+  /** The pane this event came from; `reconcile` uses it to recognise a restarted holder. */
+  paneId?: string;
   reason?: string;
   token?: string;
   /** Present for `event: "report"`: the raw `goal_report` arguments. */
@@ -1041,13 +1043,26 @@ export async function runGoalEvent(
   switch (input.event) {
     case 'settled':
     case 'run-started':
-    case 'reconcile':
       event = {
         kind: input.event,
         now,
         ...(input.sessionPath ? { sessionPath: input.sessionPath } : {}),
       } as GoalEvent;
       break;
+    case 'reconcile': {
+      // `reconcile` is the one event that may *adopt* a goal: a restarted pi is a new session file, so
+      // the recorded holder no longer exists and every other event from it is refused. The pane id is
+      // what makes the adoption safe — see `onReconcile`.
+      const identity = identityFromEnv();
+      const paneId = input.paneId ?? identity.paneId;
+      event = {
+        kind: 'reconcile',
+        now,
+        ...(input.sessionPath ? { sessionPath: input.sessionPath } : {}),
+        ...(paneId ? { paneId } : {}),
+      };
+      break;
+    }
     case 'wake': {
       const token = input.token ?? active.record.wake?.token;
       if (token === undefined) return idleResponse('not waiting; nothing to wake');

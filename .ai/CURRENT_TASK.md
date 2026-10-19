@@ -190,6 +190,10 @@ other's type.
    while `pendingHandoff` is set, so a baton transfer that does not retire it leaves the successor
    never-nudged and escalates "requested but never taken" about a handoff that landed. Ask of any
    `pending*` field: which transition retires it, on every path?
+- `.ai/pitfalls/cases/a-restarted-pi-could-not-adopt-its-own-goal.md` — a baton guard that refuses an
+  event also refuses the *recovery* that event carries: a restarted pi is a new session file, so
+  `reconcile` was refused, so nothing re-armed the timer, and the liveness deadline could never fire
+  either (same handler). `reconcile` now adopts on **the same pane**, never on a different one.
 - `.ai/pitfalls/cases/a-long-run-cannot-be-produced-by-making-the-work-bigger.md` — three real probes
   proved the loop end to end (incl. a real L2 timer). The model finishes in one turn, so a long run needs
   a gate that cannot be satisfied until something outside the session changes. Also: `rounds: 0` is not

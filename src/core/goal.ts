@@ -157,8 +157,16 @@ export type GoalEvent =
    * owns the clock and nothing else; there is no engine process while pi is idle.
    */
   | { kind: 'poll'; now: string; token: string; observed: boolean; sessionPath?: string }
-  /** Session start / restart: re-arm a live wait, or escalate one whose deadline has passed. */
-  | { kind: 'reconcile'; now: string }
+  /**
+   * Session start / restart: re-arm a live wait, or escalate one whose deadline has passed.
+   *
+   * Carries the starting session's identity because **a restart replaces the baton's holder**. A killed
+   * pi comes back as a *new session file*, so the recorded baton names a session that no longer exists;
+   * refusing the newcomer left the latch armed with nobody to wake it (measured: a 10-minute wait whose
+   * timer never fired after the process was restarted, because every event from the new session was
+   * `ignore`d). See `onReconcile`.
+   */
+  | { kind: 'reconcile'; now: string; sessionPath?: string; paneId?: string }
   | { kind: 'close'; now: string; reason: Exclude<CloseReason, 'completed'> };
 
 export type GoalEffect =
@@ -417,7 +425,7 @@ export function reduce(
     case 'poll':
       return onPoll(record, event.now, event.token, event.observed);
     case 'reconcile':
-      return onReconcile(record, event.now, limits);
+      return onReconcile(record, event.now, limits, event.sessionPath, event.paneId);
     case 'close':
       return onClose(record, event.now, event.reason);
   }
@@ -877,8 +885,48 @@ function onWake(record: GoalRecord, now: string, token: string, reason: string):
   return step(record);
 }
 
-function onReconcile(record: GoalRecord, now: string, limits: GoalLimits): GoalStep {
+/**
+ * A session starting: adopt it if the recorded holder is gone, then re-arm or escalate its wait.
+ *
+ * **The adoption is the part a restart needs.** A restarted pi is a *new session file*, so
+ * `record.baton.sessionPath` names a session that no longer exists and `holdsBaton` refuses every event
+ * from the newcomer — including this one. That path was measured on a real restart: a 10-minute wait
+ * whose timer never fired, because the new process was told `not the baton holder` for every event and
+ * therefore never armed anything. The goal was picked up only by hand.
+ *
+ * Adopting is not a loophole in the baton rule, because of who is allowed to take it:
+ *
+ * - **the same pane** (`paneId` matches) — the pane is the continuity, and the session file is the thing
+ *   that changes across a restart. These two facts are what make the rule workable: pane ids survive a
+ *   herdr server restart (measured), session files do not survive a pi restart.
+ * - **the same session file** — nothing changed at all (a `session_start` in the same process).
+ * - **no recorded holder** — nothing to displace.
+ *
+ * Anything else is a different pane, and is refused exactly as before: an intruder opening the same
+ * project must not be able to adopt someone's goal. And a *closed* goal is never adopted.
+ */
+function onReconcile(
+  record: GoalRecord,
+  now: string,
+  limits: GoalLimits,
+  sessionPath?: string,
+  paneId?: string,
+): GoalStep {
   if (isClosed(record)) return step(record);
+
+  // The restart case, before anything reads `record.baton`.
+  let adopted = record;
+  const holder = record.baton?.sessionPath;
+  const sameHolder = sessionPath === undefined || holder === undefined || holder === sessionPath;
+  const samePane =
+    paneId !== undefined && record.baton?.paneId !== null && record.baton?.paneId === paneId;
+  if (record.baton !== null && sessionPath !== undefined && !sameHolder && samePane) {
+    adopted = { ...record, baton: { sessionPath, paneId: paneId ?? record.baton.paneId, startedAt: now } };
+  } else if (record.baton === null && sessionPath !== undefined) {
+    // A goal created outside a session and driven for the first time: claim it, as `run-started` would.
+    adopted = { ...record, baton: { sessionPath, paneId: paneId ?? null, startedAt: now } };
+  }
+  record = adopted;
 
   if (record.status === 'waiting' && record.wake) {
     // A wake already consumed is not re-armed: re-arming it would schedule a token the engine no

@@ -601,3 +601,55 @@ test('wakes that arrived while blocked are drained when the human answers', () =
   const blockedAgain = send(resumed.view, { kind: 'report', now: hours(4), report: { status: 'blocked', reason: 'other' } });
   assert.equal(blockedAgain.view.record.pendingWakes.length, 0);
 });
+
+test('a restarted session in the same pane adopts the goal and re-arms the wait', () => {
+  // Measured on a real restart: a killed pi comes back as a *new session file*, so the recorded baton
+  // names a session that no longer exists. `holdsBaton` then refuses every event from the newcomer —
+  // including `reconcile` — so nothing armed the timer and a 10-minute wait never fired. The goal was
+  // only recoverable by hand.
+  // The holder has a pane recorded, because that is the field the adoption turns on: a real goal records
+  // one at creation from `HERDR_PANE_ID`, and a goal without one cannot tell a restart from an intruder.
+  const armed = record({
+    status: 'waiting',
+    baton: { sessionPath: BATON, paneId: 'w13:p1', startedAt: T0 },
+    wake: { token: 'wake-1', condition: { kind: 'time', seconds: 600 }, requestedAt: T0, deadlineAt: hours(24), handled: false },
+  });
+  const restarted = '/sessions/two.jsonl';
+  const r = reduce(
+    view(armed),
+    { kind: 'reconcile', now: hours(1), sessionPath: restarted, paneId: 'w13:p1' },
+    DEFAULT_LIMITS,
+  );
+  assert.equal(r.record.baton?.sessionPath, restarted, 'the restart is the holder now');
+  assert.deepEqual(kinds(r.effects), ['schedule-wake'], 'and the wait is armed for the new process');
+  assert.equal(r.record.status, 'waiting');
+
+  // The same pane is the continuity. A different pane in another session is an intruder, and is still
+  // refused: adopting on a bare `reconcile` would let any pane take over any goal.
+  const intruder = reduce(
+    view(armed),
+    { kind: 'reconcile', now: hours(1), sessionPath: '/sessions/other.jsonl', paneId: 'w99:p9' },
+    DEFAULT_LIMITS,
+  );
+  assert.equal(intruder.record.baton?.sessionPath, BATON, 'the baton did not move');
+  assert.deepEqual(kinds(intruder.effects), ['schedule-wake'], 'it may still learn about the wait, but it does not hold it');
+
+  // A restart in the same pane after the wait expired escalates instead of re-arming — the deadline is
+  // still the deadline, even across a restart.
+  const late = reduce(
+    view(armed),
+    { kind: 'reconcile', now: hours(25), sessionPath: restarted, paneId: 'w13:p1' },
+    DEFAULT_LIMITS,
+  );
+  assert.equal(late.record.status, 'blocked');
+  assert.equal(late.record.baton?.sessionPath, restarted, 'and the dead holder has been replaced');
+});
+
+test('an unclaimed goal is claimed by the first session that reconciles it', () => {
+  const fresh = record({ baton: null, status: 'running' });
+  const r = reduce(view(fresh), { kind: 'reconcile', now: hours(1), sessionPath: '/sessions/first.jsonl', paneId: 'w13:p1' }, DEFAULT_LIMITS);
+  assert.equal(r.record.baton?.sessionPath, '/sessions/first.jsonl');
+  // Without this a goal created outside a session could never be driven at all: every event would be
+  // refused for having no holder.
+  assert.deepEqual(kinds(r.effects), []);
+});
