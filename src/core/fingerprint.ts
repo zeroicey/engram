@@ -387,6 +387,16 @@ function fitToBudget(
       // Compared as the *rendered text*, which is the thing that has to agree with `dropped`.
       if ((again.dropped.length > 0 ? omissionLine(again.dropped) : '') === notice) break;
     }
+    // Belt and braces for the exit-by-exhaustion path. Convergence is not monotone in the notice's
+    // *length*: `omissionLine` renders a shortened tier as `PITFALLS(10L)` and the same tier dropped
+    // whole as `PITFALLS(all)`, so a longer drop set can yield a SHORTER notice and the loop can
+    // oscillate instead of converging. Then it leaves through the pass counter with `pointers.lines`
+    // holding the notice built from the *previous* drop set while `dropped` is the newer one — the
+    // artefact and `--json` silently disagreeing, which is the one thing this notice exists to prevent.
+    // Re-deriving the notice from the final `dropped` makes the two agree on every exit.
+    const at = pointers.lines.findIndex((l) => l.startsWith('  omitted:'));
+    if (at >= 0) pointers.lines.splice(at, 1);
+    if (dropped.length > 0) pointers.lines.push(omissionLine(dropped));
   }
 
   let markdown = render(kept);
@@ -398,6 +408,14 @@ function fitToBudget(
     // names what the cut took — leaving a truncated fragment that looks like a whole document. Below the
     // ~338-byte floor there is no room for the content, but there is always room for the sentence that
     // says content is missing.
+    // Record the byte-cut in `dropped` BEFORE the notice is rendered from it. It used to be pushed
+    // afterwards, so the artefact could never name the cut it had just made: measured, every budget from
+    // 1 to 419 bytes produced a notice listing only the sections, while `--json` also reported
+    // `(hard cut)(all)` — the artefact and its own accounting disagreeing, in the direction that makes a
+    // pasted digest look more complete than it is.
+    if (!dropped.some((d) => d.section === '(hard cut)')) {
+      dropped.push({ section: '(hard cut)', lines: 0, how: 'dropped' });
+    }
     const notice = dropped.length > 0 && pointers !== undefined ? `${omissionLine(dropped)}\n` : '';
     const reserve = Buffer.byteLength(notice, 'utf8');
     // A ceiling smaller than the sentence that reports the truncation has to choose, and `--max-bytes`
@@ -409,7 +427,6 @@ function fitToBudget(
     } else {
       markdown = hardTruncate(markdown, maxBytes);
     }
-    if (!dropped.some((d) => d.section === '(hard cut)')) dropped.push({ section: '(hard cut)', lines: 0, how: 'dropped' });
   }
   // "Truncated" means content was left out to fit the budget — whether a section was dropped, a line was
   // elided, or bytes were cut. Reporting only byte-cuts claimed "under budget" while silently dropping

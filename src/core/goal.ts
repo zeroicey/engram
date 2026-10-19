@@ -618,6 +618,34 @@ function onSettled(view: GoalView, now: string, limits: GoalLimits): GoalStep {
   // it. A `running` goal with nothing watching it, and no deadline, because only `waiting` has one.
   if (record.pendingHandoff) {
     const unreported = record.unreportedSettles + 1;
+    // Bounded, because this branch returned *before* the ceiling check below and therefore never
+    // escalated. Measured: 12 silent settlements with a handoff that was never taken produced 12 nudges,
+    // `unreportedSettles: 12` against a `silentSettles` ceiling of 3, and a goal still `running` — the
+    // "nudge forever" dead end the paragraph above says this branch was written to prevent, one branch
+    // over. The counter was incremented here and read only below the `return`.
+    if (unreported >= limits.silentSettles) {
+      return step(
+        next(record, now, {
+          status: 'blocked',
+          unreportedSettles: unreported,
+          pendingHandoff: null,
+          blocker: {
+            reason: REASON_HANDOFF_STALE,
+            repeats: 1,
+            needs: 'a human, or a successor that actually takes the baton',
+            raisedAt: now,
+          },
+        }),
+        [
+          {
+            kind: 'escalate',
+            severity: 'stuck',
+            message: `${REASON_HANDOFF_STALE} (${unreported} settlements with nothing reported).`,
+          },
+          silent('blocked'),
+        ],
+      );
+    }
     return step(next(record, now, { unreportedSettles: unreported }), [
       {
         kind: 'nudge',

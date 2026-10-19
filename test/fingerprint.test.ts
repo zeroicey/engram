@@ -316,6 +316,44 @@ test('REGRESSION the byte ceiling holds even when absurdly small', async (t) => 
   }
 });
 
+test('REGRESSION the artefact names every drop its own record reports', async (t) => {
+  // The `omitted:` line and the `dropped` list are the same claim in two places, and they disagreed
+  // twice before. This is the sweep that catches it: for EVERY budget, whatever `dropped` says must
+  // appear on the artefact with the same rendering.
+  //
+  // It found the `(hard cut)` case. The byte-cut record was pushed onto `dropped` AFTER the notice had
+  // been rendered from it, so at budgets 1..419 the artefact listed only the sections while `--json`
+  // also said `(hard cut)(all)` — a pasted digest reading as more complete than it was, which is the
+  // exact failure the notice exists to prevent. A single-budget assertion cannot see a boundary.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  const bank = await loadMemory(sb.root);
+
+  for (let limit = 1; limit <= 1800; limit++) {
+    const fp = buildFingerprint(bank, { maxBytes: limit });
+    assert.ok(Buffer.byteLength(fp.markdown, 'utf8') <= limit, `maxBytes=${limit} overran`);
+
+    const line = /omitted: (.*) — full content/.exec(fp.markdown)?.[1] ?? '';
+    // Nothing reported as dropped may go unnamed, above the floor where the notice itself cannot fit.
+    if (fp.dropped.length > 0 && limit > 430) {
+      assert.notEqual(line, '', `maxBytes=${limit} dropped ${fp.dropped.length} block(s) and named none`);
+    }
+    // And nothing may be named that was not dropped.
+    if (fp.dropped.length === 0) assert.equal(line, '', `maxBytes=${limit} named a drop it did not make`);
+
+    // Below the notice floor (a ceiling smaller than the sentence that reports the truncation) the
+    // artefact is a cut fragment and `--max-bytes` keeps its promise that it is a ceiling. That tradeoff
+    // is deliberate and documented; above the floor, naming is not optional.
+    if (limit > 430) {
+      for (const d of fp.dropped) {
+        const want = `${d.section}(${d.how === 'dropped' ? 'all' : `${d.lines}L`})`;
+        assert.ok(line.includes(want), `maxBytes=${limit}: ${want} is in dropped but not on the artefact (${line})`);
+      }
+    }
+  }
+});
+
 test('REGRESSION a cut fingerprint reports truncated honestly', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());

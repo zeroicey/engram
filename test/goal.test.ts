@@ -699,6 +699,34 @@ test('a subagent child inherits the pane and must not adopt the goal', () => {
   assert.deepEqual(kinds(ok.effects), ['schedule-wake']);
 });
 
+test('a handoff that is never taken escalates instead of nudging forever', () => {
+  // The `pendingHandoff` branch returned BEFORE the silent-settle ceiling was checked, so it incremented
+  // `unreportedSettles` and nothing ever read it. Measured: 12 silent settlements with a handoff nobody
+  // took produced 12 nudges, `unreportedSettles: 12` against a `silentSettles` ceiling of 3, and a goal
+  // still `running` — the "nudge forever" dead end that branch was written to prevent, one branch over.
+  const limits = { ...DEFAULT_LIMITS, silentSettles: 3 };
+  let cur = record({
+    status: 'running',
+    pendingHandoff: { requestedAt: T0, reason: 'context is filling' },
+    baton: { sessionPath: BATON, paneId: 'w13:p1', startedAt: T0 },
+  });
+  const seen: string[] = [];
+  for (let i = 1; i <= limits.silentSettles + 1; i++) {
+    const r = send(view(cur, brief()), { kind: 'settled', now: hours(i) }, limits);
+    cur = r.view.record;
+    seen.push(`${r.view.record.status}:${kinds(r.effects).join('+')}`);
+  }
+  assert.equal(cur.status, 'blocked', 'the loop must stop asking');
+  assert.equal(cur.pendingHandoff, null, 'and retire the request it gave up on');
+  assert.equal(cur.blocker?.reason, 'handoff was requested but never taken');
+  assert.deepEqual(seen, [
+    'running:nudge',
+    'running:nudge',
+    'blocked:escalate+silent',
+    'blocked:silent',
+  ]);
+});
+
 test('a legitimate wait restarts the silent-settle streak', () => {
   // `silentSettles` counts settlements since the agent last *spoke*. A report is speaking, so the streak
   // must restart on every report path — `onProgress` did it, `onWait`, `onWake` and the `waiting` branch
