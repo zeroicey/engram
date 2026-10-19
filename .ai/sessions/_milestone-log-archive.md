@@ -1,6 +1,8 @@
 # Milestone log: everything that shipped before 2026-10-19
 
-**Date:** 2026-10-19 · **Archived from:** `.ai/CURRENT_TASK.md`
+**Date:** 2026-10-19 · **Archived from:** `.ai/CURRENT_TASK.md` · **Inert by naming:** the `_` prefix keeps this file out of the
+RECENT block — it is an archive, not a handoff, and 122 bytes of a 1500-byte fingerprint belongs to the
+pitfalls it was displacing.
 
 ## Why this file exists
 

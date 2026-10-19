@@ -20,6 +20,15 @@ export interface Fingerprint {
   markdown: string;
   bytes: number;
   truncated: boolean;
+  /**
+   * What was left out to fit the budget, named.
+   *
+   * `truncated: true` was the only signal, and it is useless to a reader: it says *something* was
+   * dropped without saying what, so the fix ("write less into CURRENT_TASK", "fewer decisions", "the
+   * budget is too small for this project") cannot be chosen. Several of the seven adopting repositories
+   * render within 12 bytes of the ceiling, so this is not hypothetical — it is the next thing to break.
+   */
+  dropped: Dropped[];
   /** Parsed view for `--json` consumers and tests. */
   data: {
     project: string;
@@ -43,7 +52,24 @@ export interface Fingerprint {
     } | null;
     bytes: number;
     truncated: boolean;
+    dropped: Dropped[];
   };
+}
+
+/**
+ * One thing the budget took, and how much of it.
+ *
+ * `lines` distinguishes "the whole block is gone" (0) from "two of its three lines are gone" (2), because
+ * the two have different fixes: a dropped block means the project writes too much of that *kind* of
+ * content, a shortened block means one entry is too long.
+ */
+export interface Dropped {
+  /** The section heading, or `NOW` / `POINTERS` for the two that are never fully dropped. */
+  section: string;
+  /** How many lines of it did not fit. `0` means the whole section was dropped. */
+  lines: number;
+  /** `dropped` when the block is gone, `shortened` when only some of its lines are. */
+  how: 'dropped' | 'shortened';
 }
 
 const MARK = { ACCEPTED: '✅', PROPOSAL: '💭', REJECTED: '🪦', UNKNOWN: '·' } satisfies Record<
@@ -202,7 +228,8 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
   ];
   // Project-declared sections are the one part of the bank engram did not invent, so the
   // fingerprint names them: an agent that never learns `.ai/journal/` exists will not read it.
-  sections.push({ heading: 'POINTERS', lines: pointers, priority: 4 });
+  const pointerSection: FingerprintSection = { heading: 'POINTERS', lines: pointers, priority: 4 };
+  sections.push(pointerSection);
   if (bank.sections.length) {
     const shownSections = bank.sections.slice(0, 4);
     const tail = bank.sections.length > shownSections.length ? ' · …' : '';
@@ -221,13 +248,14 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
     'Read .ai/CURRENT_TASK.md first. Follow AGENTS.md for the full contract.',
   ];
 
-  const fitted = fitToBudget(header, sections, maxBytes);
+  const fitted = fitToBudget(header, sections, maxBytes, pointerSection);
   const markdown = fitted.markdown;
   const bytes = Buffer.byteLength(markdown, 'utf8');
   return {
     markdown,
     bytes,
     truncated: fitted.truncated,
+    dropped: fitted.dropped,
     data: {
       project,
       generated,
@@ -262,6 +290,7 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
         : null,
       bytes,
       truncated: fitted.truncated,
+      dropped: fitted.dropped,
     },
   };
 }
@@ -293,33 +322,137 @@ function fitToBudget(
   header: () => string[],
   sections: FingerprintSection[],
   maxBytes: number,
-): { markdown: string; truncated: boolean } {
+  pointers?: FingerprintSection,
+): { markdown: string; truncated: boolean; dropped: Dropped[] } {
   const render = (kept: FingerprintSection[]): string =>
     [...header(), ...kept.flatMap((s) => (s.heading === undefined ? s.lines : [s.heading, ...s.lines])), ''].join('\n');
 
-  const size = (kept: FingerprintSection[]): number =>
-    Buffer.byteLength(render(kept), 'utf8');
+  const size = (kept: FingerprintSection[]): number => Buffer.byteLength(render(kept), 'utf8');
   const fits = (kept: FingerprintSection[]): boolean => size(kept) <= maxBytes;
 
-  let kept = [...sections];
-  // Rendered before anything is dropped, so "was anything left out?" is a byte comparison
-  // rather than a guess about which branch ran.
-  const full = render(kept);
+  // Rendered before anything is dropped, so "was anything left out?" is a byte comparison rather than
+  // a guess about which branch ran.
+  const full = render(sections);
+
+  // `dropToFit` is a pure function of the *original* section list, and the notice loop below calls it
+  // repeatedly. Making it mutate its input instead meant the second call ran against an
+  // already-shortened list, found everything fitting, and reported "nothing was dropped" — so the
+  // omission line rendered empty, which is worse than not having one.
+  let result = dropToFit(sections, fits);
+  let { kept, dropped } = result;
+
+  // Name the omissions **on the artefact**, not only on stderr: a fingerprint is pasted into a session,
+  // and its reader never sees stderr. Without this, a digest whose PITFALLS block did not fit reads
+  // exactly like a project that has no pitfalls — which is what happened to this repository the moment
+  // its `CURRENT_TASK` grew. POINTERS is priority 4 and never dropped, so the notice always survives.
+  if (pointers !== undefined) {
+    for (let pass = 0; pass < 3; pass++) {
+      const already = pointers.lines.findIndex((l) => l.startsWith('  omitted:'));
+      if (dropped.length === 0) {
+        // Nothing was taken on this pass: drop any stale notice from the previous one.
+        if (already >= 0) pointers.lines.splice(already, 1);
+        result = dropToFit(sections, fits);
+        kept = result.kept;
+        dropped = result.dropped;
+        break;
+      }
+      if (already >= 0) pointers.lines.splice(already, 1);
+      pointers.lines.push(omissionLine(dropped));
+      const again = dropToFit(sections, fits);
+      kept = again.kept;
+      dropped = again.dropped;
+      if (sameDropped(again.dropped, dropped)) break;
+    }
+  }
+
+  let markdown = render(kept);
+  if (!fits(kept)) {
+    // The floor itself does not fit. Say so on the artefact rather than only in the exit code: a reader
+    // of a pasted fingerprint cannot see stderr.
+    markdown = hardTruncate(markdown, maxBytes);
+    if (!dropped.some((d) => d.section === '(hard cut)')) dropped.push({ section: '(hard cut)', lines: 0, how: 'dropped' });
+  }
+  // "Truncated" means content was left out to fit the budget — whether a section was dropped, a line was
+  // elided, or bytes were cut. Reporting only byte-cuts claimed "under budget" while silently dropping
+  // the binding decisions.
+  return { markdown, truncated: markdown !== full, dropped };
+}
+
+/** Whether two drop reports describe the same content loss. */
+function sameDropped(a: Dropped[], b: Dropped[]): boolean {
+  return a.length === b.length && a.every((d, i) => d.section === b[i]?.section && d.lines === b[i]?.lines && d.how === b[i]?.how);
+}
+
+/** The drop-and-shorten pass, as a pure function so it can be run repeatedly. */
+function dropToFit(
+  sections: FingerprintSection[],
+  fits: (k: FingerprintSection[]) => boolean,
+): { kept: FingerprintSection[]; dropped: Dropped[] } {
+  // A shallow copy per level: the caller's sections must survive for the next pass to start from.
+  let kept = sections.map((s) => ({ ...s, lines: [...s.lines] }));
+  const dropped: Dropped[] = [];
+
+  /**
+   * Shorten before dropping, one tier at a time, least valuable first.
+   *
+   * The old order dropped a whole section before shortening any, so 239 bytes over the ceiling (this
+   * repository, the moment `CURRENT_TASK` grew) lost **all** pitfalls to keep three session titles.
+   * Trimming each tier to its first entry first means the same budget buys one decision, one session
+   * *and* one pitfall — three pointers instead of three of one kind, and the reader still learns that
+   * the other sections exist. A whole section is only given up when shortening it to a single line
+   * was not enough.
+   *
+   * `dropped` is built from the *original* line counts, so a report says "BINDING (2 lines)" rather
+   * than naming a section that is still present.
+   */
+  const shorten = (p: number): void => {
+    const section = kept.find((x) => x.priority === p);
+    if (section === undefined) return;
+    const before = section.lines.length;
+    while (section.lines.length > 1 && !fits(kept)) section.lines.pop();
+    const removed = before - section.lines.length;
+    if (removed > 0) {
+      dropped.push({ section: section.heading ?? `(continuation @${p})`, lines: removed, how: 'shortened' });
+    }
+  };
+
+  // Pass 1 — trim every elastic tier to one entry, least valuable first. Trimming all of them before
+  // sacrificing any one of them is what lets a tight budget buy *a* decision, *a* session and *a*
+  // pitfall instead of three of one kind. Measured: this repository was 11 bytes over after PITFALLS
+  // was trimmed to a single line, and the single-pass version dropped the whole block rather than
+  // finding 11 bytes in RECENT.
   for (const p of ELASTIC_PRIORITIES) {
     if (fits(kept)) break;
+    shorten(p);
+  }
+
+  // Pass 2 — still over, so a tier has to go, least valuable first.
+  for (const p of ELASTIC_PRIORITIES) {
+    if (fits(kept)) break;
+    for (const gone of kept.filter((s) => s.priority === p)) {
+      // Replace that tier's `shortened` note: reporting both "PITFALLS (1 line)" and "PITFALLS
+      // (whole)" for one section is two statements about the same thing, and only one is still true.
+      const at = dropped.findIndex((d) => d.section === (gone.heading ?? `(continuation @${p})`));
+      if (at >= 0) dropped.splice(at, 1);
+      dropped.push({ section: gone.heading ?? `(continuation @${p})`, lines: 0, how: 'dropped' });
+    }
     kept = kept.filter((s) => s.priority !== p);
   }
-  // Shorten what remains: the elastic sections first, then NOW, never below one line each.
-  for (const p of [...ELASTIC_PRIORITIES, 0]) {
-    const s = kept.find((x) => x.priority === p);
-    while (s && s.lines.length > 1 && !fits(kept)) s.lines.pop();
-  }
-  let markdown = render(kept);
-  if (!fits(kept)) markdown = hardTruncate(markdown, maxBytes);
-  // "Truncated" means content was left out to fit the budget — whether a section was dropped,
-  // a line was elided, or bytes were cut. Reporting only byte-cuts claimed "under budget" while
-  // silently dropping the binding decisions.
-  return { markdown, truncated: markdown !== full };
+
+  // NOW is never dropped, only shortened — it is the line that says what this project is doing.
+  if (!fits(kept)) shorten(0);
+  return { kept, dropped };
+}
+
+/**
+ * One pointer line naming what the budget took.
+ *
+ * Deliberately names the *section* rather than only counting bytes: "PITFALLS (whole)" tells the reader
+ * to open `.ai/pitfalls/`, while "truncated at 1424 B" tells them nothing they can act on.
+ */
+function omissionLine(dropped: Dropped[]): string {
+  const named = dropped.map((d) => `${d.section}(${d.how === 'dropped' ? 'all' : `${d.lines}L`})`);
+  return `  omitted: ${named.join(' ')} — full content is in .ai/`;
 }
 
 /** Final safety net: cut on a byte boundary, never mid-codepoint. */

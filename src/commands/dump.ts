@@ -34,6 +34,7 @@ export async function runDump(opts: DumpOptions): Promise<DumpResult> {
       markdown: '',
       bytes: 0,
       truncated: false,
+      dropped: [],
       exitCode: 2,
       hint: `No .ai/ memory bank at ${path.join(opts.root, '.ai')}. Run \`engram init\` first.`,
       readErrors: bank.readErrors,
@@ -52,6 +53,7 @@ export async function runDump(opts: DumpOptions): Promise<DumpResult> {
         activeGoal: null,
         bytes: 0,
         truncated: false,
+        dropped: [],
       },
     };
   }

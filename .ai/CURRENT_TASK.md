@@ -2,19 +2,11 @@
 
 **Status:** 🟡 Pi-only (0.5.0, unpublished) · goal engine M1–M4 done; L1+L2+L3 wake transports live; **handoff opens a window in this space** · **Updated:** 2026-10-18
 
-> **目标与 CURRENT_TASK 的边界**：一个 goal 是**带机器判据的目标**（大小任意——「把 mAP 训练到 ≥0.85」就是
-> 一等公民）；本文是**这场追求的处境**，没有判据、永不「完成」。目标只声明一次（由 goal 声明）；计划在任何
-> 时刻只存在一个地方（有 goal 时是它的 `TASKS.md`，没有时是本文的 `Next action`）。`dump` 里分别渲染为
-> `project:` 与 `GOAL / run:`。见
-> `.ai/decisions/2026-10-18-a-goal-is-a-judged-objective-current-task-is-the-projects-position.md`。
-
 ## Goal
 
-Make an agent able to run for hours or days without a human present: a **goal** lives in the
-project (`.ai/goal/<id>/`), is judged by a machine-checkable `done_when`, may **wait** without
-burning tokens, and is never ended by the model's own claim of success. Memory and mechanics live
-here; the runtime belongs to herdr. The extension surface (`.ai/sections.json`, `.ai/skills/*.md`)
-is what lets a project like `research` own its own partitions while this is built.
+Let an agent run a long task for hours or days unattended: a goal lives in `.ai/goal/<id>/`, is judged by a
+machine-checkable `done_when`, may wait without burning tokens, and is never ended by the model's own
+claim of success.
 
 ## Checklist
 
@@ -46,43 +38,14 @@ is what lets a project like `research` own its own partitions while this is buil
 v0.3.0's single carrier dir, v0.4.0's `sections.json` + `.ai/skills` source of truth, the git
 precondition, nine clients → three → one, the goal engine M1–M4, the three wake transports, and the
 handoff-as-a-window) are logged in
-[`.ai/sessions/2026-10-19-milestone-log-archive.md`](sessions/2026-10-19-milestone-log-archive.md) —
+[`.ai/sessions/_milestone-log-archive.md`](sessions/_milestone-log-archive.md) —
 **read it before asking "did we already try that?"**. It moved because this file is read on every
 session start and had reached 301 lines; `engram doctor` reports the length now.
 
 ## Code state
 
-Branch `main`. `src/` is 33 TypeScript modules, `test/` 17 suites, 336 tests, zero runtime deps.
-Build: `npm run build` → `build/`; tests run against compiled output on purpose. `engram dump`
-renders 1425 B here (budget 1500) with the active goal — only 75 B of headroom, and the same file across
-the seven repositories that adopted the bank ran 1308–1488 B, i.e. several are within 12 B of the ceiling.
-The budget is the next real constraint, not the code. **One tool adapter: `pi`.** The config is v2 (`goal` opt-in only, now `on` in
-this repo) and `core/config.ts` no longer imports `adapters/`, so the layering allowlist is down to a
-single entry. 2026-10-18 added two leaf modules: `src/templates/systemd.ts`
-(the unit, a pure string) and `src/core/herdr.ts` (the delivery hop, all I/O injectable). `core/` now
-spawns a process from two modules — `goal-eval.ts` for a `cmd:` gate and `herdr.ts` for a delivery —
-and both keep every failure mode distinguishable rather than collapsing to `null`. Reading the machine
-is `commands/`' job: the wake-condition observation (`fs` + `process.kill`, artifact paths confined by
-`staysInsideRoot`) lives in `commands/goal.ts`, which is why `templates/` still never imports `node:fs`.
-
-The L2 transport is one host-side operation and no rules: the engine publishes an absolute `fireAt`,
-the extension arms a timer, and at that instant it *asks* `engram goal event --type poll`. Whether the
-condition holds is decided in `core/goal.ts` (`time` from the wait's own `requestedAt`, the other two
-from the observation the CLI passes in), which is what keeps the generated file a marshaller — and what
-keeps an artifact path on the same confinement rule as `done_when.file`. A satisfied poll only *peeks*
-(`wake-ready`); the release is a separate `wake` claim that the host sends **after** the message has
-been delivered, in both transports. That ordering is the difference between a failed delivery and a
-parked goal nobody is watching — see
-`.ai/pitfalls/cases/a-wake-consumed-before-it-was-delivered.md`.
-
-The `init` precondition is a **command-level** check in `cmdInit`, not inside `runInit`: a refused
-init must not have touched the filesystem at all, and keeping it in the command handler makes that
-visible in one place. `test/helpers.ts` now creates a `.git` marker by default so every suite runs
-under the real precondition; `sandboxWithoutGit()` is the escape hatch for the refusal test.
-
-Layering held: `core/` imports nothing from `commands/` (two allowlisted edges to `adapters/` and `templates/` predate the rule and are listed in `.ai/ARCHITECTURE.md` §6). `templates/contract.ts` declares
-`ContractRow` structurally and `core/sections.ts` produces that shape, so neither layer knows the
-other's type.
+Branch `main`. 33 modules, 17 suites, 336 tests, zero runtime deps. One adapter (`pi`), config v2 with
+`goal` on. Module map, layering and the L2 protocol: `.ai/ARCHITECTURE.md`.
 
 ## Blockers
 
@@ -154,19 +117,9 @@ other's type.
 
 ## Next action
 
-Next action, in order:
+1. A real multi-hour unattended run (the shape is proven; duration is not).
+2. A handoff *during* a wait — two real panes have never done it.
+3. `/verify` — run the project's gate and record the result.
+4. Publish 0.5.0 (**human**, 2FA), then let `research` declare `.ai/sections.json` themselves.
 
-1. **A real multi-hour unattended run.** The shape is proven (a 30-minute wait, two waits in one goal,
-   and a pi restart mid-wait); what is unmeasured is *duration* — a wait longer than a session's
-   patience, and the 24h liveness deadline. Check the deadline with a short `limits.livenessMs` instead
-   of waiting a day. See `.ai/pitfalls/cases/a-long-run-cannot-be-produced-by-making-the-work-bigger.md`.
-2. **A handoff *during* a wait** — the one composition never run: the successor must re-arm from
-   `goal.json` (`session_start` → `reconcile`) while the predecessor's timer is refused by the baton
-   guard. The reducer proves both; two real panes have never done it.
-3. **`/verify`** — run the project's gate and record the result. Three write verbs, zero read verbs.
-4. Publish 0.5.0 (**human**, 2FA), then let `research` declare `.ai/sections.json` themselves — that is
-   the acceptance test for the extension surface, and it must be done by them, not by us.
-
-One provisional answer from the M1 decision is still open and nothing above depends on it: a `time` wait
-longer than 24h gets its own deadline. See
-`.ai/decisions/2026-10-18-goal-record-schema-and-report-surface.md` §Provisional.
+Details for each: `.ai/sessions/_milestone-log-archive.md` and the decisions in `BINDING` above.

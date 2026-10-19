@@ -432,3 +432,57 @@ test('a CURRENT_TASK that lost its contract headings says so instead of going qu
   assert.match(fp, /missing: CURRENT_TASK has no Goal \/ Next action \/ Code state heading/);
   assert.match(fp, /state: 🟡 in progress/, 'the status line still renders');
 });
+
+test('an over-budget fingerprint names what it dropped, on the artefact itself', async (t) => {
+  // `truncated: true` was the only signal before this, and it is useless to a reader: it says something
+  // was left out without saying what, so the fix cannot be chosen. A fingerprint is pasted into a
+  // session and its reader never sees stderr, so the omission has to be in the document.
+  const sb = await sandbox('engram-fp-omitted-');
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  const fp = buildFingerprint(await loadMemory(sb.root), { maxBytes: 420 });
+
+  assert.equal(fp.truncated, true);
+  assert.ok(fp.dropped.length > 0, 'the drop is reported structurally');
+  assert.match(fp.markdown, /^  omitted: /m, 'and on the artefact');
+  for (const d of fp.dropped) {
+    assert.ok(fp.markdown.includes(d.section), `${d.section} is named in the notice`);
+  }
+  assert.ok(Buffer.byteLength(fp.markdown, 'utf8') <= 420, 'the ceiling is still a ceiling');
+});
+
+test('a budget that only needs trimming keeps every section', async (t) => {
+  // Shortening before dropping is the point: the same bytes buy one decision, one session *and* one
+  // pitfall rather than three of one kind. This repository hit the failure mode — 11 bytes over after
+  // PITFALLS was trimmed to one line — and the single-pass version gave up the entire pitfalls block
+  // instead of finding 11 bytes in the recent-sessions block.
+  const sb = await sandbox('engram-fp-trim-');
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  for (let i = 1; i <= 3; i++) await sb.write(`.ai/pitfalls/cases/case-${i}.md`, `# pitfall ${i}\n`);
+
+  const full = buildFingerprint(await loadMemory(sb.root), { maxBytes: 5000 });
+  const tight = buildFingerprint(await loadMemory(sb.root), { maxBytes: Buffer.byteLength(full.markdown, 'utf8') - 60 });
+
+  const headingsOf = (md: string): string[] => md.split('\n').filter((l) => /^[A-Z]+$/.test(l));
+  for (const heading of headingsOf(full.markdown)) {
+    assert.ok(
+      headingsOf(tight.markdown).includes(heading),
+      `${heading} survived a trim — shortening must be tried before dropping`,
+    );
+  }
+  assert.ok(tight.dropped.some((d) => d.how === 'shortened'), 'and the trim is reported');
+  assert.ok(!tight.dropped.some((d) => d.how === 'dropped'), 'nothing was given up entirely');
+});
+
+test('a section is not reported as both shortened and dropped', async (t) => {
+  // The first version of the shortening pass pushed a `shortened` note and then, when that was not
+  // enough, a `dropped` note for the same section — so the notice read "PITFALLS(1L) PITFALLS(all)".
+  const sb = await sandbox('engram-fp-both-');
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  for (let i = 1; i <= 4; i++) await sb.write(`.ai/pitfalls/cases/case-${i}.md`, `# pitfall ${i}\n`);
+  const fp = buildFingerprint(await loadMemory(sb.root), { maxBytes: 380 });
+  const sections = fp.dropped.map((d) => d.section);
+  assert.equal(new Set(sections).size, sections.length, `one entry per section, got ${sections.join(', ')}`);
+});

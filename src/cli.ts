@@ -276,6 +276,17 @@ async function cmdDump(root: string, args: Args): Promise<number> {
   }
   for (const e of result.readErrors) console.error(`warn: unreadable ${e}`);
   for (const w of result.warnings) console.error(`warn: ${w}`);
+  // Say what the budget took, and to stderr so a pasted fingerprint stays clean. `truncated: true` was
+  // the only signal before this and it is useless to a reader: it says something was left out without
+  // saying what, so the fix cannot be chosen. Several adopting repositories render within 12 bytes of
+  // the ceiling, so this fires in practice rather than in theory.
+  if (result.dropped.length) {
+    const named = result.dropped.map((d) => (d.how === 'dropped' ? `${d.section} (whole)` : `${d.section} (${d.lines} line${d.lines === 1 ? '' : 's'})`));
+    console.error(
+      `warn: fingerprint truncated at ${result.bytes} B — dropped ${named.join(', ')}` +
+        `; free bytes by shortening CURRENT_TASK.md or by raising --max-bytes`,
+    );
+  }
 
   const out = renderDump(result, format);
   process.stdout.write(out.endsWith('\n') ? out : `${out}\n`);
