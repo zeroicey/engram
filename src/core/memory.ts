@@ -124,11 +124,21 @@ const STATUS_LINE_RE = /^[^\S\n]*\**[^\S\n]*(?:status|state)\**[^\S\n]*:[^\S\n]*
 export function decisionStatus(content: string): DecisionStatus {
   const header = STATUS_LINE_RE.exec(content)?.[1] ?? '';
   const scope = header || content;
-  const m = /💭\s*PROPOSAL|✅\s*ACCEPTED|🪦\s*REJECTED|\b(PROPOSAL|ACCEPTED|REJECTED)\b/i.exec(scope);
+  const m =
+    /💭\s*PROPOSAL|✅\s*ACCEPTED|🪦\s*(?:REJECTED|SUPERSEDED)|\b(PROPOSAL|ACCEPTED|REJECTED|SUPERSEDED)\b/i.exec(
+      scope,
+    );
   if (!m?.[0]) return 'UNKNOWN';
   const s = m[0].toUpperCase();
   if (s.includes('PROPOSAL')) return 'PROPOSAL';
   if (s.includes('ACCEPTED')) return 'ACCEPTED';
+  // `SUPERSEDED` is a *reason for* the tombstone, not a fourth state: a decision replaced by a later
+  // one is retired exactly like a rejected one, and the two must behave identically everywhere that
+  // reads a status (never in BINDING, never counted as live). Scanning all seven adopting repositories
+  // showed the vocabulary actually in use is `✅ ACCEPTED` / `🪦 REJECTED` / `🪦 SUPERSEDED` /
+  // `💭 PROPOSAL` — and the parser recognised only the first three, so this repository's own two
+  // `🪦 SUPERSEDED` decisions were classified UNKNOWN and silently vanished from the fingerprint.
+  // Found by `engram doctor` reporting them as unclassified.
   return 'REJECTED';
 }
 

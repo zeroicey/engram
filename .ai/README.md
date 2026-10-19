@@ -48,6 +48,11 @@ tools never resets context.
 ```bash
 engram dump            # ≤1.5 KB fingerprint → paste as the first user message
 engram dump --json     # same content, machine-readable
+engram doctor          # read-only health check: contract, size, drift, carriers
+engram doctor --json   # same findings, one `rule` id each, for CI or /audit
 ```
+
+`doctor` exits 1 only on an `error` finding, so it can gate a build. It never writes, and every hint it
+prints is a suggestion for the project, never a command that rewrites the project's own files.
 
 Project: **engram** · skeleton created 2026-10-01 by engram.

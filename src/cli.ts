@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { TOOLS } from './adapters/index.js';
 import { runInit, runSync } from './commands/init.js';
 import { renderDump, runDump } from './commands/dump.js';
+import { runDoctor } from './commands/doctor.js';
 import { isMemoryKind, runNew, runNewSection, type MemoryKind } from './commands/new.js';
 import {
   runGoalBaton,
@@ -108,6 +109,7 @@ const HELP = `engram v${VERSION} — portable project memory + scaffold for AI c
 USAGE
   engram init [options]        create .ai/, rule-file contracts, skills, bootstrap meta-prompt
   engram dump [options]        print the ≤1.5KB session fingerprint
+  engram doctor [options]      check the memory bank: contract, size, drift, carriers
   engram new <kind> <title>    scaffold one memory file (decision|session|pitfall|runbook,
                                plus any section declared in .ai/sections.json)
   engram goal <verb>           create / inspect / verify / close a long-running goal
@@ -130,6 +132,12 @@ DUMP OPTIONS
 
 SYNC OPTIONS
   --dry-run          report planned actions only
+
+DOCTOR OPTIONS
+  --json             machine-readable findings (a stable \`rule\` id per finding)
+  --root <dir>       operate on another directory (default: cwd)
+
+  Read-only. Exits 1 when a finding is an error, 0 otherwise — warnings and notes never block a build.
 
 GOAL VERBS
   engram goal new "<text>" [--cmd "npm test" ...] [--metric file:path:op:value] [--checklist]
@@ -240,6 +248,16 @@ async function cmdInit(root: string, args: Args): Promise<number> {
   console.log(`\nNext: give .engram/BOOTSTRAP.md to your AI assistant, then run \`engram sync\`.`);
   for (const w of result.warnings) console.error(`warn: ${w}`);
   return 0;
+}
+
+/** `engram doctor` — read-only bank health. Exits 1 on an `error` finding, 0 otherwise. */
+async function cmdDoctor(root: string, args: Args): Promise<number> {
+  const result = await runDoctor({
+    root,
+    format: flag(args.flags, 'json') ? 'json' : 'text',
+  });
+  process.stdout.write(`${result.lines.join('\n')}\n`);
+  return result.exitCode;
 }
 
 async function cmdDump(root: string, args: Args): Promise<number> {
@@ -575,6 +593,8 @@ export async function main(argv: string[]): Promise<number> {
       return cmdInit(root, args);
     case 'dump':
       return cmdDump(root, args);
+    case 'doctor':
+      return cmdDoctor(root, args);
     case 'new':
       return cmdNew(root, args);
     case 'goal':
