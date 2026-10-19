@@ -74,3 +74,21 @@ probed for minutes, but **nobody has run a goal for hours**.
   from there.
 - **Backticks are forbidden in `src/templates/goal-extension.ts`** (one template literal; TS1443 at a line
   that looks fine — hit three times) and **in `git commit -m`** (the shell expands them; use `-F file`).
+
+## Known findings NOT fixed (found by round 3, verified, left open)
+
+These are real and were deliberately deferred — none is a P0. They were originally only in the reviewer
+artefacts under `/tmp`, which the reinstall wipes, so they are recorded here.
+
+| File | Finding | Severity |
+| --- | --- | --- |
+| `core/goal-store.ts` | `parseGoalRecord` rebuilds a whitelist and hardcodes `version: 1`, so any field it does not know is **deleted from disk on the next write**. Tolerance on read becomes destructive on write. | P2 |
+| `core/goal-store.ts` | `parseWakeCondition` accepts any finite `seconds >= 0`; the `MAX_DATE_MS` bound lives only in its consumers, and `conditionDue` multiplies raw — so `seconds: Infinity` makes a time condition never due. | P2 |
+| `core/goal-store.ts` | `listGoalIds`/`activeGoal` swallow a readdir failure and return `[]`, so an unreadable `.ai/goal/` renders as "no goal yet". | P2 |
+| `core/goal-store.ts` | `parseBrief`'s JSON fence regex requires exactly three backticks, so a ```` `````json ```` block (which GitHub accepts) is a silent misparse → the goal is told it has no `done_when`. | P2 |
+| `core/config.ts` | `parseLimits` floors *after* the `> 0` check, so `stuckRounds: 0.5` stores `0` — the value the guard exists to reject — and the stuck branch fires on the first settle. Floor first, then reject. | P2 |
+| `core/git.ts` | `workingTreeDigest`'s `IGNORED` set (`dist/`, `build/`, …) and the dot-dir skip mean work confined there is invisible → a productive goal can be falsely declared stuck. | P2 |
+| `commands/init.ts` | A `.engram/config.json` that is a **directory** is reported `skipped` with no warning, and `sync` then reads ENOENT-ish and disables the goal engine silently. | P2 |
+| `commands/init.ts` | `init` and `sync` disagree about who owns a v2 config with a stale `tools` array: `init` says `kept`, `sync` rewrites it. | P2 |
+| `templates/goal-extension.ts` | The emitted file still is not `strictNullChecks`-clean (`let timer = null` narrows to literal `null`). This is **inherent**: the file must stay valid JavaScript, so it cannot be annotated. Documented in the test. | note |
+
