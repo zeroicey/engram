@@ -93,6 +93,19 @@ Every item needs evidence the engine can verify, and an item without evidence ma
 
 \`engram goal check\` verifies all three; a checked box with an unverifiable claim still fails.
 
-- [ ] first item — \`path/to/artifact\`
+## Where a relative path resolves
+
+Against the **project root** — the same base \`engram goal check\` and \`--root\` already use. Not the
+goal directory, and not the shell's cwd, so an evidence line means the same thing whatever directory
+you happened to run the command from.
+
+Prefer paths **inside the goal directory**, as \`out/<name>\` artifacts: \`.ai/goal/<id>/out/\` is where
+the goal's own products belong, and a project-root-relative path into it stays portable across a
+clone and a move.
+
+A path that resolves outside the project is **refused**, not resolved — evidence that can point at
+an arbitrary system file is not evidence.
+
+- [ ] first item — \`out/first-artifact.json\`
 `;
 }

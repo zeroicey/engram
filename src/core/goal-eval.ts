@@ -146,12 +146,23 @@ export async function evaluateDoneWhen(
 export type EvidenceSpec = { kind: 'path'; value: string } | { kind: 'cmd'; value: string };
 
 export function parseEvidence(raw: string): EvidenceSpec | null {
-  const evidence = raw.trim();
+  // Backticks are stripped by the *caller* that extracted the span, but a hand-written checklist or
+  // the generated template spells evidence as a fenced span, so the value can still arrive wrapped:
+  // ``` `evidence: cmd:grep -q DONE=1 out/p_big.txt` ```. Left in place, that trailing backtick became
+  // part of the command and `sh` reported `exit 2` for a command that was correct — a checklist item
+  // that could never pass however right it was. Measured on a real goal's TASKS.md.
+  const evidence = raw.trim().replace(/^`+|`+$/g, '').trim();
   if (evidence === '') return null;
+  // A value collected by `parseChecklist`'s `evidence:` clause can keep the span's *closing* backtick
+  // even when the opening one was consumed, so a command arrives as
+  //   cmd:grep -q DONE=1 out/p_big.txt`
+  // and `sh` reports exit 2 for a command that was written correctly. Strip it once more *after* the
+  // prefix is removed, which is the only place both shapes are handled.
+  const strip = (v: string): string => v.trim().replace(/^`+|`+$/g, '').trim();
   const pathPrefix = /^path:\s*(.+)$/i.exec(evidence);
-  if (pathPrefix?.[1]) return { kind: 'path', value: pathPrefix[1].trim() };
+  if (pathPrefix?.[1]) return { kind: 'path', value: strip(pathPrefix[1]) };
   const cmdPrefix = /^cmd:\s*(.+)$/i.exec(evidence);
-  if (cmdPrefix?.[1]) return { kind: 'cmd', value: cmdPrefix[1].trim() };
+  if (cmdPrefix?.[1]) return { kind: 'cmd', value: strip(cmdPrefix[1]) };
   if (/\s/.test(evidence)) return { kind: 'cmd', value: evidence };
   return { kind: 'path', value: evidence };
 }

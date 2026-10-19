@@ -454,3 +454,33 @@ test('a short CSV row is a failed verdict, not an undefined value', async () => 
   assert.equal(empty.passed, false);
   assert.match(empty.detail, /0 >= 0.8/);
 });
+
+test('REGRESSION evidence written inside a backticked span parses to the bare command', () => {
+  // The generated TASKS.md template tells a human to write
+  //   - [ ] item  — `evidence: cmd:grep -q DONE=1 out/p_big.txt`
+  // and `parseEvidence` kept the trailing backtick, so the shell received
+  //   grep -q "DONE=1" out/p_big.txt`
+  // and exited 2. A checklist item written exactly as the template instructs could never pass.
+  // What `parseChecklist` actually hands over for a template-shaped line: the `evidence:` prefix is
+  // already consumed by its own regex, and the span's closing backtick survives into the value.
+  assert.deepEqual(parseEvidence('cmd:grep -q "DONE=1" out/p_big.txt`'), {
+    kind: 'cmd',
+    value: 'grep -q "DONE=1" out/p_big.txt',
+  });
+  assert.deepEqual(parseEvidence('path:out/eval.json`'), {
+    kind: 'path',
+    value: 'out/eval.json',
+  });
+  // And the whole-line form, end to end, through the parser that produces it.
+  const items = parseChecklist(
+    '- [x] done — `evidence: cmd:grep -q "DONE=1" out/p_big.txt`\n',
+  );
+  assert.equal(items.length, 1);
+  assert.deepEqual(parseEvidence(items[0]?.evidence ?? ''), {
+    kind: 'cmd',
+    value: 'grep -q "DONE=1" out/p_big.txt',
+  });
+  // The bare forms still behave.
+  assert.deepEqual(parseEvidence('`npm test`'), { kind: 'cmd', value: 'npm test' });
+  assert.deepEqual(parseEvidence('`docs/goal.md`'), { kind: 'path', value: 'docs/goal.md' });
+});
