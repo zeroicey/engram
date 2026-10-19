@@ -228,13 +228,18 @@ export default function (pi) {
   // the tool call that asked for the wait.
   const WAKE_FIRST_LOOK_MS = 1000;
 
+  // Deliberately un-annotated. 'let timer = null' would narrow to the literal null under
+  // strictNullChecks, but this file must stay **valid JavaScript**: pi loads it with no transpile
+  // step, so a type annotation here would be a syntax error at runtime. The tradeoff is that a
+  // strictNullChecks run reports this line; the guard in test/goal-extension.test.ts is scoped to
+  // arity errors for exactly that reason.
   let timer = null;
   let armedToken = null;
 
   // Cancel by token, not unconditionally. A replaced wait arrives as [clear-wake old,
   // schedule-wake new], and an unconditional clear would cancel the new one and park the goal with no
   // timer at all — a lost notification, built by the code that exists to prevent one.
-  function clearWake(token) {
+  function clearWake(token = undefined) {
     if (token !== undefined && token !== armedToken) return;
     if (timer !== null) clearTimeout(timer);
     timer = null;
@@ -452,7 +457,25 @@ export default function (pi) {
         // wait and the model was never told, leaving a 'running' goal that nothing watches (only
         // 'waiting' has a liveness deadline). 'triggerTurn' is right here too: the goal was parked, and
         // this pane just asked for it to move.
-        if (res && res.message) safeSend(pi, res.message, { triggerTurn: true });
+        // Delivered? '/goal wake' was the one transport that consumed the latch and then ignored the
+        // answer to "did the message arrive". 'onWake' releases the wait and returns 'clear-wake' +
+        // 'nudge', so by the time the send is attempted the goal is already 'running' with 'wake: null'
+        // — a state with no deadline (only 'waiting' has one) and nothing watching it. If the runtime is
+        // stale, the model is never told and nothing notices. 'deliver()' in the timer path already has
+        // this guard; this branch is the same ordering one transport over, and a guard on one side of a
+        // transition and not the other is this repository's most expensive recurring shape.
+        if (res && res.message) {
+          if (!safeSend(pi, res.message, { triggerTurn: true })) {
+            // The latch is already released, so there is nothing to keep latched — the honest move is to
+            // tell the human the model was not told, while a notification into the same stale runtime
+            // can still reach ctx.ui (a different channel from pi.sendMessage).
+            ctx.ui.notify(
+              "engram: the goal was woken but the model could not be reached — re-send it with /goal wake",
+              "warning",
+            );
+            return;
+          }
+        }
         ctx.ui.notify(res ? res.notify || res.reason || "goal woken" : "engram goal wake failed", "info");
         applyEffects(res, session);
         return;

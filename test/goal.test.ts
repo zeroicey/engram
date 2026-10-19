@@ -699,6 +699,63 @@ test('a subagent child inherits the pane and must not adopt the goal', () => {
   assert.deepEqual(kinds(ok.effects), ['schedule-wake']);
 });
 
+test('a legitimate wait restarts the silent-settle streak', () => {
+  // `silentSettles` counts settlements since the agent last *spoke*. A report is speaking, so the streak
+  // must restart on every report path — `onProgress` did it, `onWait`, `onWake` and the `waiting` branch
+  // of `onRunStarted` did not. A goal that settled N times, reported `wait`, was woken, and settled once
+  // more therefore escalated "settled N+1 times without calling goal_report" on that first settlement:
+  // the detector was reading stale bookkeeping, and it fired at an agent that had just reported.
+  const limits = { ...DEFAULT_LIMITS, silentSettles: 3 };
+  const stale = record({
+    status: 'running',
+    unreportedSettles: 7,
+    baton: { sessionPath: BATON, paneId: 'w13:p1', startedAt: T0 },
+  });
+
+  const waited = send(view(stale, brief()), { kind: 'report', now: hours(1), report: { status: 'wait', wakeOn: { kind: 'time', seconds: 60 } }, digest: 'd' }, limits);
+  assert.equal(waited.view.record.unreportedSettles, 0, 'reporting a wait is speaking');
+
+  const woke = send({ record: waited.view.record, brief: brief() }, { kind: 'wake', now: hours(2), token: waited.view.record.wake?.token ?? '', reason: 'time' }, limits);
+  assert.equal(woke.view.record.unreportedSettles, 0, 'and being woken is not a silent settle');
+
+  const settled = send({ record: woke.view.record, brief: brief() }, { kind: 'settled', now: hours(3) }, limits);
+  assert.equal(settled.view.record.status, 'running', 'the first settlement back must not escalate');
+  assert.deepEqual(kinds(settled.effects), ['nudge']);
+});
+
+test('an identified non-holder cannot close the goal with a verdict or a cancel', () => {
+  // The baton guard covered run-started/settled/report (and, separately, wake/poll) but NOT verdict or
+  // close — the two verbs that end a goal. `verdict` is emitted by `engram goal check`, which any pane
+  // or any shell can run, so a stranger could close someone's goal with `status: done` +
+  // `closeReason: completed`: a goal that reads as *verified complete* without the holder ever seeing it.
+  // Measured before the fix: `reduce(…, {kind:'verdict', passed:true, sessionPath:'/other'})` returned
+  // `status: done` with `closedAt` set.
+  //
+  // Both keep the **unidentified** emitter working, for the same reason `wake` does: a human running
+  // `engram goal check` at a shell has no session identity, and that is the documented manual recovery
+  // path. Refusing it would delete the escape hatch along with the hole.
+  const stranger = '/other/pane/session.jsonl';
+  const held = record({ baton: { sessionPath: BATON, paneId: 'w13:p1', startedAt: T0 } });
+
+  const v = reduce(view(held, brief()), { kind: 'verdict', now: hours(1), passed: true, detail: 'forced', sessionPath: stranger }, DEFAULT_LIMITS);
+  assert.equal(v.record.status, 'running', 'a stranger cannot complete the goal');
+  assert.equal(v.record.closedAt, null);
+  assert.deepEqual(kinds(v.effects), ['ignore']);
+
+  const c = reduce(view(held, brief()), { kind: 'close', now: hours(1), reason: 'cancelled', sessionPath: stranger }, DEFAULT_LIMITS);
+  assert.equal(c.record.closedAt, null, 'a stranger cannot cancel the goal');
+  assert.deepEqual(kinds(c.effects), ['ignore']);
+
+  // The escape hatches that must survive.
+  const human = reduce(view(held, brief()), { kind: 'verdict', now: hours(1), passed: true, detail: 'ran the gate by hand' }, DEFAULT_LIMITS);
+  assert.equal(human.record.status, 'done', 'an unidentified emitter is still a legitimate verdict');
+  const humanClose = reduce(view(held, brief()), { kind: 'close', now: hours(1), reason: 'cancelled' }, DEFAULT_LIMITS);
+  assert.notEqual(humanClose.record.closedAt, null, 'and an unidentified cancel still works');
+  // The holder itself is of course allowed.
+  const owner = reduce(view(held, brief()), { kind: 'verdict', now: hours(1), passed: true, detail: 'holder', sessionPath: BATON }, DEFAULT_LIMITS);
+  assert.equal(owner.record.status, 'done');
+});
+
 test('an unclaimed goal is claimed by the first session that reconciles it', () => {
   const fresh = record({ baton: null, status: 'running' });
   const r = reduce(view(fresh), { kind: 'reconcile', now: hours(1), sessionPath: '/sessions/first.jsonl', paneId: 'w13:p1' }, DEFAULT_LIMITS);

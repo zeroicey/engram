@@ -130,7 +130,58 @@ test('the generated extension is valid JavaScript and names its own provenance',
   }
 });
 
+test('the emitted extension survives an arity check, not only a syntax check', async () => {
+  // `node --check` proves syntax and nothing else. The generator emitted `clearWake()` while declaring
+  // `clearWake(token)`, so the file written into a user's repository had a latent defect for a whole
+  // release and no test could see it — an arity error only appears under a type checker, which this
+  // repository runs over `src/` and `test/` but never over its own generated output.
+  //
+  // The check is deliberately scoped to the diagnostics that are real for this file. It CANNOT be
+  // `--strict`: the emitted file must stay valid JavaScript (pi loads it with no transpile step), so it
+  // carries no type annotations at all. `noImplicitAny` would therefore flag every parameter, and
+  // `strictNullChecks` flags `let timer = null` — both are inherent to being JS-valid, not bugs. What is
+  // left, and what this asserts, is that the file is *internally consistent*: every call matches its
+  // declaration. That is exactly the class of defect the generator shipped.
+  const src = goalExtensionSource({ engramBin: 'engram', version: '0.5.0', reminderPercent: 85 });
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'engram-ext-strict-'));
+  const file = path.join(dir, 'engram-goal.ts');
+  await fs.writeFile(file, src);
+  try {
+    const tsc = path.join(process.cwd(), 'node_modules', 'typescript', 'bin', 'tsc');
+    let out = '';
+    try {
+      execFileSync(
+        process.execPath,
+        [tsc, '--noEmit', '--target', 'es2022', '--module', 'nodenext', '--moduleResolution', 'nodenext', file],
+        { stdio: 'pipe', encoding: 'utf8' },
+      );
+    } catch (e) {
+      out = String((e as { stdout?: string; stderr?: string }).stdout ?? '') + String((e as { stderr?: string }).stderr ?? '');
+    }
+    // TS2554 is "Expected N arguments, but got M" — the shipped defect.
+    assert.ok(!/TS2554|TS2555/.test(out), `the emitted extension must call what it declares:\n${out}`);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a wake that cannot be delivered is not reported as delivered', () => {
+  // The `/goal wake` branch consumed the latch and then ignored whether the message arrived: `onWake`
+  // releases the wait (status running, wake null) and returns the message as a `nudge`, so a failed
+  // `sendMessage` left a running goal with no deadline (only `waiting` has one) and nothing watching,
+  // while the human was told "goal woken". The timer path's `deliver()` already had this guard; this
+  // asserts the other transport does too.
+  const src = goalExtensionSource({ engramBin: 'engram', version: '0.5.0', reminderPercent: 85 });
+  const branch = src.slice(src.indexOf('text.startsWith("wake")'));
+  const wakeBranch = branch.slice(0, branch.indexOf('const res = event("status"'));
+  assert.match(wakeBranch, /if \(!safeSend\(/, 'the send result must be checked');
+  assert.match(wakeBranch, /ctx\.ui\.notify\(/, 'and a failed delivery must tell the human');
+  // And it must not claim success on that path.
+  assert.match(wakeBranch, /return;/, 'the failure path returns before the happy-path notify');
+});
+
 test('the generated extension reports an unreachable binary instead of silently doing nothing', () => {
+
   const src = goalExtensionSource({ engramBin: 'engram', version: '0.5.0', reminderPercent: 85 });
   // `spawnSync` reports ENOENT as `res.error` with `status: null`; treating that as "no answer" is
   // how the engine looks installed while recording nothing (pitfalls/cases/generated-extension-not-executable.md).

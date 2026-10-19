@@ -138,7 +138,21 @@ export type GoalEvent =
   | { kind: 'settled'; now: string; sessionPath?: string }
   | { kind: 'report'; now: string; report: GoalReport; digest?: string | null; sessionPath?: string }
   /** The `done_when` evaluator's result, fed back after an `evaluate` effect ran. */
-  | { kind: 'verdict'; now: string; passed: boolean; detail: string; digest?: string | null }
+  | {
+      kind: 'verdict';
+      now: string;
+      passed: boolean;
+      detail: string;
+      digest?: string | null;
+      /**
+       * The emitter's identity, when it has one — the same one-sided rule as `wake`.
+       *
+       * `engram goal check` run by a human has no session and must keep working (it is the manual
+       * recovery path), but the *same verb* emitted from another pane's session used to close an
+       * anyone's goal with `status: done`. An identified non-holder is now refused.
+       */
+      sessionPath?: string;
+    }
   /**
    * An external wake (`goal wake <id> --reason …`), addressed to the goal, not to a pane.
    *
@@ -166,7 +180,7 @@ export type GoalEvent =
    * `ignore`d). See `onReconcile`.
    */
   | { kind: 'reconcile'; now: string; sessionPath?: string; paneId?: string }
-  | { kind: 'close'; now: string; reason: Exclude<CloseReason, 'completed'> };
+  | { kind: 'close'; now: string; reason: Exclude<CloseReason, 'completed'>; sessionPath?: string };
 
 export type GoalEffect =
   /** Continue the loop: `agent_before_settle` → `{ continue: true, entries: [...] }`. */
@@ -422,6 +436,26 @@ export function reduce(
     }
   }
 
+  // `verdict` and `close` are the two state-moving verbs this block did not cover, and both were
+  // reachable by an identified non-holder:
+  //
+  // - `verdict` closes a goal with `status: done` + `closedAt` + `closeReason: completed`. It is emitted
+  //   by `engram goal check` (a human's shell, another pane) and by the CLI's own in-process evaluator
+  //   answering late. Neither carried the baton, and neither was checked. A `P0`: any session in the
+  //   project could end anyone's goal, and the goal would read as *verified complete*.
+  // - `close` is the escape hatch, and the unidentified path already serves a human at a shell. An
+  //   *identified* non-holder cancelling someone else's goal is not the escape hatch.
+  //
+  // Both keep the unidentified-emitter exemption for the same reason `wake` does: a human's `engram goal
+  // check` has no session identity, and refusing that would delete the manual recovery path.
+  if (
+    (event.kind === 'verdict' || event.kind === 'close') &&
+    event.sessionPath !== undefined &&
+    !holdsBaton(record, event.sessionPath)
+  ) {
+    return step(record, [{ kind: 'ignore', reason: 'not the baton holder for this goal' }]);
+  }
+
   // A wake is the one event whose guard is **one-sided**, and both halves are deliberate.
   //
   // An *unidentified* emitter is legitimate: the wake is addressed to the goal, not to a pane (rule
@@ -483,7 +517,10 @@ function onRunStarted(record: GoalRecord, now: string, limits: GoalLimits): Goal
   if (record.status === 'waiting') {
     const effects: GoalEffect[] = [];
     if (record.wake) effects.push({ kind: 'clear-wake', token: record.wake.token });
-    return step(next(record, now, { status: 'running', wake: null }), effects);
+    // A new run is the agent acting again, so the silent-settle streak restarts — the same rule the
+    // `blocked` branch below already applied. Leaving it meant a goal that settled N times, waited, and
+    // was woken escalated "settled N+1 times without calling goal_report" on its first settlement back.
+    return step(next(record, now, { status: 'running', wake: null, unreportedSettles: 0 }), effects);
   }
   // A human answering a blocked goal is a run. The blocker counters survive on purpose: if the
   // same reason comes back after the answer, that *is* the loop the repeat detector exists for.
@@ -779,9 +816,21 @@ function onWait(
       wakeSeq: record.wakeSeq + 1,
       reports: record.reports + 1,
       blocker: null,
-      // Same rule as `onBlocked`: a wait is a later statement of what this goal is doing, so the earlier
-      // handoff request does not survive it.
+      // The silent-settle floor counts settlements since the agent last *spoke*. A report is speaking,
+      // so the streak is over and the counter must restart here — exactly as `onProgress` does it.
+      // Without this, a goal that settled N times, then legitimately reported `wait`, woke, and settled
+      // once more hit the ceiling on that first settlement and escalated "settled N+1 times without
+      // calling goal_report" about an agent that had just reported. The detector was measuring stale
+      // bookkeeping instead of the current streak.
+      unreportedSettles: 0,
+      // A wait is a later statement of what the goal is doing, so the earlier handoff request does not
+      // survive it.
       pendingHandoff: null,
+      // `pendingWakes` are news *for a blockage* that this wait has now replaced. Leaving them set made
+      // `goal status` keep printing "N wake(s) arrived while blocked" for a goal that had not been
+      // blocked since — the staleness `onProgress`, onVerdict and the blocked branch of `onRunStarted`
+      // were each fixed for. This is the fourth path; the rule is the same on every one.
+      pendingWakes: [],
       lastNote: note,
     }),
     effects,
@@ -968,7 +1017,7 @@ function onWake(record: GoalRecord, now: string, token: string, reason: string):
     // `record.wake`, so a handled-but-still-armed wake produced a `schedule-wake` for a token the
     // engine no longer holds. That token then hit the `handled` guard and was dropped — a lost
     // notification by construction, which is exactly what this file's own comment forbids.
-    return step(next(record, now, { status: 'running', wake: null }), [
+    return step(next(record, now, { status: 'running', wake: null, unreportedSettles: 0, pendingWakes: [] }), [
       { kind: 'clear-wake', token },
       { kind: 'nudge', reason: 'wake', message: wakeMessage(reason) },
     ]);
