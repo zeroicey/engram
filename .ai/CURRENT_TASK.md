@@ -111,9 +111,19 @@ Branch `main`. 33 modules, 18 suites, 351 tests, zero runtime deps. One adapter 
 
 ## Next action
 
-1. A real multi-hour unattended run (the shape is proven; duration is not).
-2. A handoff *during* a wait — two real panes have never done it.
-3. `/verify` — run the project's gate and record the result.
-4. Publish 0.5.0 (**human**, 2FA), then let `research` declare `.ai/sections.json` themselves.
+**This stage: review round 2 → fix → push. No publish, no tag** (the user's machine is being reinstalled;
+the code only has to reach the remote). Full brief, including the review prompt shape that worked:
+[`.ai/sessions/2026-10-19-review-round-2-handoff.md`](sessions/2026-10-19-review-round-2-handoff.md).
 
-Details for each: `.ai/sessions/_milestone-log-archive.md` and the decisions in `BINDING` above.
+1. **Review round 2, on the 25 fixes** (`0799b8f`) — three parallel reviewers, goal engine / host boundary /
+   memory bank. A review of the original code would find what the first round found; the fixes are the thing
+   under suspicion, and this session already shipped a broken convergence loop inside the fix for "the report
+   disagrees with the artefact".
+2. **Fix what it finds**, P0/P1 first, one regression test per finding (the two probes worth keeping: a
+   budget sweep over `1..1800` bytes, and a `loadMemory` severity assertion).
+3. **A local trial in a repository the user picks** — `init`/`sync` → `doctor` → `config --goal on` → one
+   real goal. Expect `doctor` to report errors on the existing adopters; `engram` reports and does not
+   rewrite another project's bank.
+4. **Push `origin main`.** No tag, no publish.
+5. After that: a real multi-hour unattended run, a handoff *during* a wait, `/verify`, and `research`
+   declaring `.ai/sections.json` themselves.
