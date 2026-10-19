@@ -183,3 +183,14 @@ invisible: nothing in engram measured the file, so the only thing that ever noti
       `project:`/`next:`/`branch:`) from **empty** ones (`empty:` — two byte-identical untouched
       templates, one 16 days old, previously indistinguishable from a live project). Resolved blockers
       (`~~…~~` / ✅ / [x]) no longer publish as live ones.
+
+## Compacted 2026-10-19
+
+- [x] **2026-10-19 `engram doctor` exists.** The same checks had been run by hand as shell loops against
+      all seven adopters, and everything they found was invisible to `engram` itself: three repositories
+      had lost their `CURRENT_TASK` headings, two held byte-identical untouched templates, one had orphan
+      carriers, and `sync` reported "clean" for every one of them. `src/core/doctor.ts` (pure checks over
+      a loaded bank) + `src/commands/doctor.ts` (the I/O), `--json` for machines, exit 1 on an `error`
+      only. It immediately found a real bug in **this** repository: two `🪦 SUPERSEDED` decisions were
+      classified `UNKNOWN` and had never reached the fingerprint, because the parser knew only
+      `🪦 REJECTED`. It also reported this file at 301 lines, which is now 164.

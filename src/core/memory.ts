@@ -472,3 +472,117 @@ export async function loadMemory(root: string): Promise<MemoryBank> {
     warnings: declared.warnings,
   };
 }
+// ---------------------------------------------------------------- the one mechanical fix
+
+export interface CompactResult {
+  /** `CURRENT_TASK.md` with completed milestones replaced by a pointer. Byte-identical when there is nothing to move. */
+  currentTask: string;
+  /** The lines that belong in the archive, in order, or `[]`. */
+  moved: string[];
+  /** How many `- [x]` entries were found (each may span several lines). */
+  movedCount: number;
+}
+
+/**
+ * Move completed milestones out of `CURRENT_TASK.md`, mechanically.
+ *
+ * This is the *only* rewrite `engram` performs on a project's own prose, and it is deliberately the
+ * narrowest one that solves a measured problem: the file is read on every session start, and every
+ * repository that used the bank let it grow (144–537 lines against a ~60-line guidance) because
+ * appending a `- [x]` is free and deleting it feels like losing history.
+ *
+ * Three properties make it safe enough to be a command rather than advice:
+ *
+ * - **Nothing is deleted.** The lines leave this file and arrive in the archive verbatim — the reasoning
+ *   in a completed milestone is exactly what a later reader wants when asking "did we already try that?".
+ * - **Only checked items move.** `- [x]` and its indented continuation lines. Prose, open items, headings
+ *   and tables are untouched, because a machine cannot tell which parts of a project's own summary are
+ *   still load-bearing.
+ * - **A placeholder is not a milestone.** The scaffold ships `- [x] …` as an example of the shape, and
+ *   moving it would put a template's ellipsis in the archive and leave the next reader believing one
+ *   milestone was completed. An item whose text is only an ellipsis is skipped.
+ * - **Idempotent.** Running it twice changes nothing the second time: the items are already gone and the
+ *   pointer is already there.
+ */
+export function compactCurrentTask(content: string): CompactResult {
+  const lines = content.split('\n');
+  const moved: string[] = [];
+  const kept: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    if (!/^- \[[xX]\]\s/.test(line) || isPlaceholder(line)) {
+      kept.push(line);
+      continue;
+    }
+    // The item and every following line more indented than the bullet: a wrapped checkbox is one entry,
+    // and splitting it would put half a sentence in each file.
+    moved.push(line);
+    while (i + 1 < lines.length && /^\s{2,}\S/.test(lines[i + 1] ?? '')) {
+      i += 1;
+      moved.push(lines[i] ?? '');
+    }
+  }
+
+  if (moved.length === 0) return { currentTask: content, moved: [], movedCount: 0 };
+
+  const movedCount = moved.filter((l) => /^- \[[xX]\]/.test(l)).length;
+  const pointer = `${POINTER_PREFIX}${movedCount} completed milestone(s) archived in ${ARCHIVE_PATH} — read it before asking "did we already try that?"_`;
+
+  // The pointer goes at the **end of the `## Checklist` section**, which is where the entries came from.
+  // Placing it before the next heading of any name put it above `## Goal` — the first thing a reader sees
+  // would have been a note about history.
+  const out = collapseBlankRuns(kept);
+  if (out.some((l) => l.startsWith(POINTER_PREFIX))) {
+    // A previous run already left a pointer: update its count rather than adding a second one.
+    return {
+      currentTask: out.map((l) => (l.startsWith(POINTER_PREFIX) ? pointer : l)).join('\n'),
+      moved,
+      movedCount,
+    };
+  }
+  const at = endOfChecklistSection(out);
+  out.splice(at, 0, ...(out[at - 1]?.trim() === '' ? [] : ['']), pointer);
+  return { currentTask: out.join('\n'), moved, movedCount };
+}
+
+/**
+ * Whether a checkbox line is the scaffold's example rather than a real entry.
+ *
+ * `- [x] …` exists in the shipped template to show the shape. It is not history, and treating it as
+ * history put an ellipsis in the archive and told the next reader a milestone had been completed.
+ */
+function isPlaceholder(line: string): boolean {
+  const text = line.replace(/^- \[[xX]\]\s*/, '').trim();
+  return text === '' || /^[….…]+$/.test(text);
+}
+
+/** Index of the first blank line at or after the last real line of `## Checklist`, else `out.length`. */
+function endOfChecklistSection(lines: string[]): number {
+  const start = lines.findIndex((l) => /^##\s+Checklist/i.test(l));
+  if (start < 0) return lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i] ?? '')) {
+      // Walk back over the blank lines the section already ended with.
+      let at = i;
+      while (at > start && (lines[at - 1] ?? '').trim() === '') at -= 1;
+      return at;
+    }
+  }
+  return lines.length;
+}
+
+/** Collapse runs of blank lines to one, so removing entries does not leave holes. */
+function collapseBlankRuns(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    if (line.trim() === '' && (out[out.length - 1] ?? '').trim() === '') continue;
+    out.push(line);
+  }
+  return out;
+}
+
+/** Marks the generated pointer so a second run recognises it and does not add another. */
+export const POINTER_PREFIX = '_Completed milestones: ';
+/** The file `compactCurrentTask` moves entries into. Named with `_` so it stays out of the fingerprint's RECENT block. */
+export const ARCHIVE_PATH = '`.ai/sessions/_milestone-log-archive.md`';

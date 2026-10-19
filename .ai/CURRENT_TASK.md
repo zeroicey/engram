@@ -10,8 +10,6 @@ claim of success.
 
 ## Checklist
 
-- [ ] Publish `@zeroicey/engram@0.4.0` (the human runs `npm publish`: 2FA)
-
 - [ ] `research` has not declared `.ai/sections.json` yet — the mechanism is ready, they decide
 
 - [ ] **The user's question — "can I use this while developing?" — answered as far as it can be
@@ -24,27 +22,13 @@ claim of success.
 - [ ] **Run one real multi-hour goal.** The commit-at-settlement rule, the traceability promise and
       the 24h liveness deadline have only been reasoned about — the biggest untested assumption left
 
-- [x] **2026-10-19 `engram doctor` exists.** The same checks had been run by hand as shell loops against
-      all seven adopters, and everything they found was invisible to `engram` itself: three repositories
-      had lost their `CURRENT_TASK` headings, two held byte-identical untouched templates, one had orphan
-      carriers, and `sync` reported "clean" for every one of them. `src/core/doctor.ts` (pure checks over
-      a loaded bank) + `src/commands/doctor.ts` (the I/O), `--json` for machines, exit 1 on an `error`
-      only. It immediately found a real bug in **this** repository: two `🪦 SUPERSEDED` decisions were
-      classified `UNKNOWN` and had never reached the fingerprint, because the parser knew only
-      `🪦 REJECTED`. It also reported this file at 301 lines, which is now 164.
 - [ ] **Publish 0.5.0** (human, 2FA). The Pi-only break has never been installed by anyone
 
-43 completed milestones (four-layer model, the template library, the four skills, `init`/`dump`/`new`/`sync`,
-v0.3.0's single carrier dir, v0.4.0's `sections.json` + `.ai/skills` source of truth, the git
-precondition, nine clients → three → one, the goal engine M1–M4, the three wake transports, and the
-handoff-as-a-window) are logged in
-[`.ai/sessions/_milestone-log-archive.md`](sessions/_milestone-log-archive.md) —
-**read it before asking "did we already try that?"**. It moved because this file is read on every
-session start and had reached 301 lines; `engram doctor` reports the length now.
+_Completed milestones: 44 archived in `.ai/sessions/_milestone-log-archive.md` — read it before asking "did we already try that?"._
 
 ## Code state
 
-Branch `main`. 33 modules, 17 suites, 336 tests, zero runtime deps. One adapter (`pi`), config v2 with
+Branch `main`. 33 modules, 18 suites, 342 tests, zero runtime deps. One adapter (`pi`), config v2 with
 `goal` on. Module map, layering and the L2 protocol: `.ai/ARCHITECTURE.md`.
 
 ## Blockers

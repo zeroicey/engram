@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runDoctor } from '../src/commands/doctor.js';
 import { runChecks, hasErrors, tally, CURRENT_TASK_WARN_LINES } from '../src/core/doctor.js';
+import { compactCurrentTask } from '../src/core/memory.js';
+import { buildFingerprint } from '../src/core/fingerprint.js';
 import { loadMemory } from '../src/core/memory.js';
 import { runCli, sandbox, seedBank } from './helpers.js';
 
@@ -259,4 +261,80 @@ test('hasErrors and tally read only the severity, never the text', () => {
     warn: 0,
     info: 1,
   });
+});
+
+test('compact moves completed milestones out, verbatim, and is idempotent', () => {
+  // The only rewrite engram performs on a project's own prose. Nothing is deleted: a `- [x]` entry leaves
+  // CURRENT_TASK and arrives in the archive, because the reasoning inside it is what a later reader wants
+  // when asking "did we already try that?".
+  const doc = [
+    '# Current task', '', '**Status:** ok', '', '## Goal', '', 'g', '',
+    '## Checklist', '',
+    '- [ ] open one',
+    '- [x] done one',
+    '      wrapped continuation',
+    '- [ ] open two',
+    '',
+    '## Code state', '', 'c', '',
+  ].join('\n');
+  const r = compactCurrentTask(doc);
+  assert.equal(r.movedCount, 1, 'one milestone, not one per line');
+  assert.deepEqual(r.moved, ['- [x] done one', '      wrapped continuation'], 'the wrap travels with its item');
+  assert.match(r.currentTask, /- \[ \] open one/);
+  assert.match(r.currentTask, /- \[ \] open two/);
+  assert.doesNotMatch(r.currentTask, /done one/, 'it left the file');
+  assert.match(r.currentTask, /_Completed milestones: 1 completed/, 'and left a pointer');
+
+  // Idempotent: the pointer is recognised rather than duplicated, and there is nothing left to move.
+  const twice = compactCurrentTask(r.currentTask);
+  assert.equal(twice.movedCount, 0);
+  assert.equal(twice.currentTask, r.currentTask);
+  assert.equal((r.currentTask.match(/_Completed milestones:/g) ?? []).length, 1);
+});
+
+test('the scaffold’s placeholder checkbox is not a milestone', () => {
+  // `aiCurrentTask()` ships `- [x] …` to show the shape. Moving it put an ellipsis in the archive and left
+  // the next reader believing a milestone had been completed — found by running `doctor --fix` on a fresh
+  // `init`.
+  const scaffold = ['# Current task', '', '## Checklist', '', '- [x] …', '- [ ] …', '', '## Code state', '', 'c', ''].join('\n');
+  const r = compactCurrentTask(scaffold);
+  assert.equal(r.movedCount, 0);
+  assert.equal(r.currentTask, scaffold, 'a fresh scaffold is untouched');
+});
+
+test('the pointer lands inside the Checklist section, not above the goal', async () => {
+  // The first version inserted it before the next heading of any name, which put a note about history
+  // above `## Goal` — the first thing a reader sees.
+  const sb = await sandbox('engram-doctor-compact-');
+  try {
+    await seedBank(sb);
+    // A real scaffold, because the pointer's placement is defined relative to `## Checklist` — and
+    // `seedBank`'s hand-written fixture has no such section, which is what made this assertion fail
+    // against code that was right.
+    const task = [
+      '# Current task', '', '**Status:** 🟡 active', '', '## Goal', '', 'g', '',
+      '## Checklist', '', '- [ ] still open', '- [x] a finished thing', '',
+      '## Code state', '', 'c', '', '## Next action', '', 'n', '',
+    ].join('\n');
+    await sb.write('.ai/CURRENT_TASK.md', task);
+    const r = await runCli(['doctor', '--fix', '--root', sb.root]);
+    assert.match(r.out, /moved 1 completed milestone/);
+
+    const after = await sb.read('.ai/CURRENT_TASK.md');
+    const pointerAt = after.indexOf('_Completed milestones:');
+    const checklistAt = after.indexOf('## Checklist');
+    const codeStateAt = after.indexOf('## Code state');
+    assert.ok(pointerAt > checklistAt && pointerAt < codeStateAt, 'inside Checklist, before the next heading');
+
+    // The archive holds it verbatim, and the file is inert by naming so it never reaches RECENT.
+    assert.match(await sb.read('.ai/sessions/_milestone-log-archive.md'), /- \[x\] a finished thing/);
+    const fp = buildFingerprint(await loadMemory(sb.root));
+    assert.doesNotMatch(fp.markdown, /_milestone-log-archive/);
+
+    // And a second --fix has nothing to do.
+    const again = await runCli(['doctor', '--fix', '--root', sb.root]);
+    assert.match(again.out, /nothing to compact/);
+  } finally {
+    await sb.cleanup();
+  }
 });

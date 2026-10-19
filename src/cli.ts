@@ -135,9 +135,12 @@ SYNC OPTIONS
 
 DOCTOR OPTIONS
   --json             machine-readable findings (a stable \`rule\` id per finding)
+  --fix              move completed milestones out of CURRENT_TASK.md into
+                     .ai/sessions/_milestone-log-archive.md (the only thing it changes)
   --root <dir>       operate on another directory (default: cwd)
 
-  Read-only. Exits 1 when a finding is an error, 0 otherwise — warnings and notes never block a build.
+  Read-only unless \`--fix\` is given, and \`--fix\` only ever *moves* checked items — nothing is deleted.
+  Exits 1 when a finding is an error, 0 otherwise; warnings and notes never block a build.
 
 GOAL VERBS
   engram goal new "<text>" [--cmd "npm test" ...] [--metric file:path:op:value] [--checklist]
@@ -255,6 +258,7 @@ async function cmdDoctor(root: string, args: Args): Promise<number> {
   const result = await runDoctor({
     root,
     format: flag(args.flags, 'json') ? 'json' : 'text',
+    fix: flag(args.flags, 'fix'),
   });
   process.stdout.write(`${result.lines.join('\n')}\n`);
   return result.exitCode;
