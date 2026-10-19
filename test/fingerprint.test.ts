@@ -354,3 +354,81 @@ test('the project goal and the current run are distinguishable, not two things c
     'no line may be labelled `goal` when the GOAL block means something else by it',
   );
 });
+
+test('a single-line HTML comment does not swallow the rest of the file', async (t) => {
+  // The template opens with `<!-- ... -->` on ONE line. The state machine set `inComment = true` and
+  // never checked that same line for the closer, so every heading after it was inert — which meant every
+  // scaffolded repository's `## Goal` was invisible to the parser, and the new `missing:` report said so
+  // about a file that was perfectly correct. Found by pointing the report at the seven real projects.
+  const sb = await sandbox('engram-fp-comment-');
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  const task = aiCurrentTask({ projectName: 'x', today: '2026-10-19' });
+  await sb.write('.ai/CURRENT_TASK.md', task);
+
+  const parsed = parseCurrentTask(task);
+  assert.deepEqual(parsed.missing, [], 'a fresh scaffold has every heading');
+  assert.deepEqual(parsed.empty.sort(), ['Code state', 'Goal', 'Next action'], 'and they are empty, which is normal');
+  // And the fingerprint reports the right diagnosis. A fresh scaffold obeys the contract, so it must NOT
+  // be accused of missing headings — it says its state is unwritten, which is true and actionable.
+  const fp = buildFingerprint(await loadMemory(sb.root)).markdown;
+  assert.doesNotMatch(fp, /missing:/, 'the headings are there');
+  assert.match(fp, /empty: no Goal \/ Next action \/ Code state recorded yet/);
+});
+
+test('a resolved blocker is not published as a live one', async (t) => {
+  // `chime` keeps its history in place: `- ~~微信会话失效~~ ✅ 2026-10-18 已由用户解决`. `dump` published it
+  // as a current blocker in every fresh session's fingerprint, competing for the three slots real
+  // blockers need.
+  const sb = await sandbox('engram-fp-blockers-');
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  // A whole file, not an appended section: `section()` reads the first `## Blockers` only, so appending a
+  // second one to the seeded file would have tested nothing.
+  const task = [
+    '# Current task',
+    '',
+    '**Status:** 🟡 active',
+    '',
+    '## Goal',
+    '',
+    'Ship it',
+    '',
+    '## Blockers',
+    '',
+    '- real blocker — waiting on a human',
+    '- ~~already fixed~~ ✅ 2026-10-18 resolved by the user',
+    '- ✅ also done, no strikethrough',
+    '',
+    '## Next action',
+    '',
+    'Do the thing',
+    '',
+  ].join('\n');
+  await sb.write('.ai/CURRENT_TASK.md', task);
+  const parsed = parseCurrentTask(task);
+  assert.deepEqual(parsed.blockers, ['real blocker — waiting on a human']);
+  const fp = buildFingerprint(await loadMemory(sb.root)).markdown;
+  assert.match(fp, /blocked: real blocker/);
+  assert.doesNotMatch(fp, /already fixed/);
+});
+
+test('a CURRENT_TASK that lost its contract headings says so instead of going quiet', async (t) => {
+  // Three of the seven adopted repositories (`clip`, `research`, `teleport`) rewrote `CURRENT_TASK.md`
+  // into prose, so their fingerprints silently lost `project:`, `next:` and `branch:`. `research`'s NOW
+  // block was **zero bytes**: the file that exists to say what to do said nothing, and nothing said so.
+  const sb = await sandbox('engram-fp-missing-');
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  await sb.write(
+    '.ai/CURRENT_TASK.md',
+    '# Current task\n\n**Status:** 🟡 in progress\n\n## 我们在做什么\n\n一篇长散文，没有契约要求的标题。\n',
+  );
+  const parsed = parseCurrentTask(await sb.read('.ai/CURRENT_TASK.md'));
+  assert.deepEqual(parsed.missing, ['Goal', 'Next action', 'Code state']);
+
+  const fp = buildFingerprint(await loadMemory(sb.root)).markdown;
+  assert.match(fp, /^NOW$/m);
+  assert.match(fp, /missing: CURRENT_TASK has no Goal \/ Next action \/ Code state heading/);
+  assert.match(fp, /state: 🟡 in progress/, 'the status line still renders');
+});

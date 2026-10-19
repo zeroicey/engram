@@ -32,6 +32,21 @@ export interface CurrentTask {
   nextAction: string;
   codeState: string;
   blockers: string[];
+  /**
+   * The contract **headings** this file does not have at all.
+   *
+   * A real project drifts away from the template, and the old parser degraded silently: `clip`,
+   * `research` and `teleport` have no `## Goal` / `## Next action` / `## Blockers` / `## Code state`
+   * at all, so their fingerprints lost `project:`, `next:` and `branch:` and a fresh session was told
+   * nothing about what to do — while `dump` reported success.
+   *
+   * Absent, not empty. A freshly scaffolded repository has every heading and no content, which is the
+   * normal first state and must stay quiet; a project that rewrote its `CURRENT_TASK.md` into prose has
+   * lost the contract and must not.
+   */
+  missing: string[];
+  /** Contract headings that exist but hold nothing yet — the freshly-scaffolded state. */
+  empty: string[];
   /** Raw markdown of the file, for audits. */
   raw: string;
 }
@@ -168,7 +183,14 @@ function contentLines(content: string): ContentLine[] {
     }
 
     if (!isDelimiter) {
-      if (!inComment && line.includes('<!--')) inComment = true;
+      // One line can both open and close a comment (`<!-- ... -->`), and the old state machine set
+      // `inComment = true` without ever checking the same line for the closer — so everything after a
+      // **single-line** comment was treated as comment body and silently disappeared. Measured: the
+      // `CURRENT_TASK` template opens with exactly such a line, which made every `## Goal` heading in
+      // every scaffolded repository invisible to the parser. Strip the closed spans first, then decide
+      // from what is left.
+      const withoutSpans = line.replace(/<!--[\s\S]*?-->/g, '');
+      if (!inComment && withoutSpans.includes('<!--')) inComment = true;
       else if (inComment && line.includes('-->')) inComment = false;
     }
 
@@ -247,6 +269,17 @@ function paragraph(lines: string[]): string {
 }
 
 /**
+ * A blocker line that the project already marked as dealt with.
+ *
+ * Real files keep the history in place instead of deleting it — `chime` had
+ * `- ~~微信会话失效~~ ✅ 2026-10-18 16:15 已由用户 poke 解决`, which `dump` published as a live blocker in
+ * every fresh session's fingerprint. Strikethrough is the writer's own signal that the line is history,
+ * so it is honoured rather than stripped: a resolved blocker must not compete for the three slots that
+ * real blockers need.
+ */
+const RESOLVED_BLOCKER = /^(~~.+?~~|✅|✔|\[x\])\s*/i;
+
+/**
  * Blockers, from either bullets or a Markdown table.
  *
  * The shipped template used a table while the parser skipped table rows, which made `blocked:`
@@ -271,9 +304,14 @@ function extractBlockers(lines: string[]): string[] {
         continue; // column headers are not blockers
       }
       const joined = cells.filter(Boolean).join(' — ');
-      if (joined) out.push(joined);
+      if (joined && !RESOLVED_BLOCKER.test(joined)) out.push(joined);
       continue;
     }
+    // Strikethrough is checked on the *raw* line: `cleanInline` strips markdown emphasis, so testing
+    // after cleaning would have thrown away the very marker that says "this one is done". The bullet
+    // marker is stripped first, because a real line reads `- ~~thing~~ ✅ done` and an anchored test
+    // against the raw line never matches.
+    if (RESOLVED_BLOCKER.test(raw.trim().replace(/^[-*+]\s+/, ''))) continue;
     const line = stripBullet(cleanInline(raw));
     if (!line || /^none\b/i.test(line)) continue;
     out.push(line);
@@ -286,7 +324,7 @@ export function parseCurrentTask(content: string): CurrentTask {
   const status = cleanInline(STATUS_LINE_RE.exec(headerLine)?.[1] ?? '').split(/\s+·\s+/)[0] ?? '';
   const updatedM = /\*{0,2}Updated\*{0,2}\s*:?\s*([^\n]+)/i.exec(content);
   const blockers = extractBlockers(section(content, 'Blockers'));
-  return {
+  const task: Omit<CurrentTask, 'missing' | 'empty'> = {
     status: cleanInline(status),
     updated: cleanInline(updatedM?.[1] ?? ''),
     goal: paragraph(section(content, 'Goal')),
@@ -295,6 +333,54 @@ export function parseCurrentTask(content: string): CurrentTask {
     blockers,
     raw: content,
   };
+  const headings = headingTitles(content);
+  return { ...task, ...contractGaps(task, headings) };
+}
+
+/** Every heading title in the file, lowercased and stripped of decoration, for absence checks. */
+function headingTitles(content: string): string[] {
+  return contentLines(content)
+    .filter((l) => !l.inert && l.heading !== null)
+    .map((l) =>
+      (HEADING_RE.exec(l.text)?.[2] ?? '')
+        .toLowerCase()
+        .split(/[:—–]/)[0]
+        ?.trim()
+        .replace(/[.!?]+$/, '') ?? '',
+    );
+}
+
+/**
+ * Which contract fields are absent, and which are present but empty.
+ *
+ * The two are different diagnoses and deserve different reports:
+ *
+ * - **absent** — the heading was never written, so the project is not following the contract, and a
+ *   fresh session gets no `project:` / `next:` line at all. `clip`, `research` and `teleport` are all in
+ *   this state.
+ * - **empty** — every heading is there and holds nothing yet. That is what `init` produces, so it must be
+ *   silent in the fingerprint; otherwise every newly scaffolded repository would open with a warning
+ *   about work it has not done.
+ *
+ * `Blockers` is checked for neither: an empty blocker list is a legitimate, common state, and
+ * `Status`/`Updated` are treated as the header line rather than as sections.
+ */
+function contractGaps(
+  task: Omit<CurrentTask, 'missing' | 'empty'>,
+  headings: string[],
+): Pick<CurrentTask, 'missing' | 'empty'> {
+  const fields: Array<[string, string]> = [
+    ['Goal', task.goal],
+    ['Next action', task.nextAction],
+    ['Code state', task.codeState],
+  ];
+  const missing: string[] = [];
+  const empty: string[] = [];
+  for (const [name, value] of fields) {
+    if (!headings.includes(name.toLowerCase())) missing.push(name);
+    else if (!value) empty.push(name);
+  }
+  return { missing, empty };
 }
 
 interface LoadedEntries {

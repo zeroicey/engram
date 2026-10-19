@@ -662,6 +662,13 @@ test('declaring a section must not evict pitfalls from the fingerprint', async (
   const sb = await sandbox();
   t.after(() => sb.cleanup());
   await runInit({ root: sb.root });
+  // Filled, not the raw scaffold: an unfilled `CURRENT_TASK` now renders an `empty:` line, which is
+  // correct but would quietly change this fixture's byte arithmetic and make it stop exercising the
+  // budget it exists to exercise.
+  await sb.write(
+    '.ai/CURRENT_TASK.md',
+    ['# Current task', '', '**Status:** 🟡 active', '', '## Goal', '', 'g', '', '## Code state', '', 'c', '', '## Next action', '', 'n', ''].join('\n'),
+  );
   for (let i = 1; i <= 5; i++) {
     await sb.write(
       `.ai/decisions/2026-10-0${i}-topic${i}.md`,

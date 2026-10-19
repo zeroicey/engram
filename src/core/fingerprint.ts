@@ -111,6 +111,31 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
 
   const now: string[] = [];
   if (t?.status) now.push(line('state', t.status));
+  // Say what is absent, instead of rendering a thinner digest that looks complete.
+  //
+  // Three of the seven repositories that adopted the bank have no `## Goal` / `## Next action` /
+  // `## Code state` at all, so their fingerprints quietly lost `project:`, `next:` and `branch:` — and
+  // `dump` reported success. A fresh session in `research` opened the fingerprint and saw decisions but
+  // **zero bytes of NOW**: the file that exists to say "what am I doing" said nothing, and nothing said
+  // so. One line naming the fields the reader is missing.
+  //
+  // Placed second, not last, because a tightening budget shortens NOW from the *tail*: a warning about
+  // the digest's own incompleteness must not be the first thing evicted. `state:` and this line are the
+  // two "meta" lines; everything after them is content whose absence is already visible.
+  // Absent headings only: an `init`-fresh repository has every heading and no content, which is normal
+  // and quiet. A project that rewrote `CURRENT_TASK.md` into prose has lost the contract, and a reader
+  // must be told rather than handed a thinner digest that looks complete.
+  // Compressed on purpose: the field names are the information, the file is obvious from the pointer
+  // line, and this line is competing for bytes with the content it is warning about.
+  if (t && t.missing.length) now.push(line('missing', `CURRENT_TASK has no ${t.missing.join(' / ')} heading`, 110));
+  // Headings present, nothing in them: `init` ran and nobody ever wrote state. Two of the seven
+  // repositories that adopted the bank are in exactly this state (byte-identical templates, one of them
+  // untouched for 16 days) and their fingerprints were indistinguishable from a project mid-flight —
+  // same shape, same silence, 314 bytes. This is a different diagnosis from `missing:`: the file obeys
+  // the contract and is simply unfilled.
+  if (t && !t.missing.length && t.empty.length === 3) {
+    now.push(line('empty', 'no Goal / Next action / Code state recorded yet', 100));
+  }
   // `project:` and not `goal:`, because the goal engine added a second thing that is called a goal —
   // `.ai/goal/<id>/BRIEF.md`, rendered as the GOAL block below. Two lines labelled `goal` in one
   // 1400-byte fingerprint is a fresh session being told there are two tasks and not which one to work
