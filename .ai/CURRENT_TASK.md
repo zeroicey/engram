@@ -111,21 +111,17 @@ Branch `main`. 33 modules, 19 suites, 367 tests, zero runtime deps. One adapter 
 
 ## Next action
 
-**Review round 2 shipped and pushed** (`8503c9f`, `origin/main` matches, no tag, no publish). Two review
-rounds were wasted first — the `reviewer` agent has **no write tool**, so "report incrementally" could
-never work. Round 3 used `scout`, one file per child, incremental appends, 20-call budget; all six
-delivered. Detail in `.ai/sessions/2026-10-19-review-round-2-shipped-handoff.md`.
+**Code shipped** (`79761a3`, `origin/main` matches, no tag, no publish). The machine is being reinstalled;
+tracked files are in git, `build/`+`node_modules/` rebuild via `npm install && npm test`.
 
-1. **Salvage the dead reviewers' thinking blocks before relaunching.** They held the findings and lost only
-   the citations. Two of the three defects fixed before round 3 came from there, including the P0 that was
-   biting this very session: `HERDR_PANE_ID` is inherited, so `samePane` adoption handed the goal's baton to
-   a review subagent (`.ai/pitfalls/cases/a-subagent-inherits-the-pane-and-steals-the-baton.md`).
-2. **13 defects fixed**, each with a regression test that reproduces the measured failure. The P0: `verdict`
-   and `close` had no baton guard, so `engram goal check` from any shell could close anyone's goal as
-   *verified complete*. Also: a corrupted config silently deleted the goal carrier (round 1's P0 by another
-   route); `init` wrote through a dangling symlink to outside `--root`; `touch` defeated the stuck detector,
-   and on a capability-less host the detector could never fire at all.
-3. **The local trial was waived by the user** ("skip the trial, just push"). Still untried on a real adopter.
-4. Next, in the user's words: a real multi-hour unattended run, a handoff *during* a wait, `/verify`, and
-   `research` declaring `.ai/sections.json` themselves.
-5. **Publish 0.5.0** is still human-only (2FA). The Pi-only break has never been installed by anyone.
+**Next session starts by reading
+[`sessions/2026-10-19-post-reinstall-handoff.md`](sessions/2026-10-19-post-reinstall-handoff.md)** — it opens
+with the five commands that must pass before anything is believed on a fresh machine.
+
+1. **Re-verify first.** `npm test` must be 367; if not, the checkout is not `79761a3`.
+2. **Then the user's instruction, verbatim:** 新的对话直接开始监控新的，这就是实际的项目了 — a long
+   **unattended run on a real project**, not more review of this one.
+3. **Ask which project** if unnamed. The trial was waived this stage, so engram has never run on an
+   existing adopter's bank. `doctor` erroring on `clip`/`research`/`teleport` is intended.
+4. **Use a short `limits.livenessMs`**, not a day. Then a handoff *during* a wait, and `/verify`.
+5. **Publish 0.5.0** stays human-only (2FA). The Pi-only break has never been installed.
