@@ -304,12 +304,32 @@ test('K rounds without a file change block the goal instead of looping', () => {
   assert.match(v.record.blocker?.reason ?? '', /no file change/);
 });
 
-test('a digest the host cannot see is not counted as unchanged', () => {
-  let v = view();
-  for (let i = 0; i < DEFAULT_LIMITS.stuckRounds + 3; i++) {
-    v = send(v, { kind: 'report', now: hours(i), report: { status: 'progress' }, digest: null }).view;
+test('an unwatchable host is bounded, and a null digest alone never clobbers real progress', () => {
+  // This test used to assert the opposite — that `digest: null` leaves `unchangedRounds` untouched, so a
+  // host without a working-tree view would keep running. That was the first fix for "a model alternating
+  // null with a real digest holds the counter at 0", and it traded an evasion for a dead detector: on
+  // exactly the host that can never produce a digest, the no-progress detector measured nothing at all.
+  // Measured then: 12 progress reports with `digest: null`, `unchangedRounds: 0`, ceiling 5.
+  //
+  // The invariant that holds both: the detector must be able to fire on ANY host, and a *real* change must
+  // still reset it. "Cannot confirm progress" is not "progress".
+  const limits = { ...DEFAULT_LIMITS, stuckRounds: 4 };
+
+  // A host that can never see a digest still escalates.
+  let unwatchable = view();
+  for (let i = 0; i < limits.stuckRounds + 1; i++) {
+    unwatchable = send(unwatchable, { kind: 'report', now: hours(i), report: { status: 'progress' }, digest: null }, limits).view;
   }
-  assert.equal(v.record.status, 'running', 'null must not be read as "nothing changed"');
+  assert.equal(unwatchable.record.status, 'blocked', 'an unwatchable host must still be bounded');
+
+  // A real change on a host that CAN see one still resets the counter — the null case must not have made
+  // every report look stuck.
+  let watchable = view();
+  for (let i = 0; i < limits.stuckRounds + 4; i++) {
+    watchable = send(watchable, { kind: 'report', now: hours(i), report: { status: 'progress' }, digest: `d${i}` }, limits).view;
+  }
+  assert.equal(watchable.record.status, 'running', 'genuine progress is never stuck');
+  assert.equal(watchable.record.unchangedRounds, 0);
 });
 
 test('reconcile re-arms a live wait and escalates an expired one', () => {
@@ -568,14 +588,40 @@ test('an unidentified session cannot drive a goal that has a holder', () => {
   assert.equal(sendAnonymous(view(fresh), { kind: 'report', now: T0, report: { status: 'progress' } }).view.record.rounds, 1);
 });
 
-test('a missing digest preserves the no-change counter instead of resetting it', () => {
-  // A model that alternates real reports with `digest: null` used to hold the counter at 0 forever.
-  let v = send(view(), { kind: 'report', now: T0, report: { status: 'progress' }, digest: 'd' }).view;
-  for (let i = 0; i < 3; i++) v = send(v, { kind: 'report', now: hours(i + 1), report: { status: 'progress' }, digest: 'd' }).view;
-  const before = v.record.unchangedRounds;
-  assert.ok(before > 0);
-  v = send(v, { kind: 'report', now: hours(9), report: { status: 'progress' }, digest: null }).view;
-  assert.equal(v.record.unchangedRounds, before, 'a null digest is neither progress nor repetition');
+test('a missing digest counts toward the stuck ceiling instead of freezing it', () => {
+  // Two bugs in sequence, and the second was introduced by the fix for the first.
+  //
+  // Original: a `null` digest RESET the counter, so a model alternating real reports with `digest: null`
+  // held it at 0 forever. First fix: leave the counter alone on `null`. That closed the evasion and
+  // opened a worse hole — on a host that can never compute a digest (a non-git project, an adapter
+  // without working-tree access) the detector measured nothing at all. Measured: twelve progress reports
+  // with `digest: null` left `unchangedRounds` at 0 against a ceiling of 5.
+  //
+  // "I cannot see a working tree" is "I cannot confirm progress", and a detector that cannot confirm
+  // progress must still be bounded — otherwise the one host where it matters most is where it is off.
+  const limits = { ...DEFAULT_LIMITS, stuckRounds: 3 };
+  let v = view();
+  for (let i = 0; i < limits.stuckRounds + 1; i++) {
+    v = send(v, { kind: 'report', now: hours(i + 1), report: { status: 'progress' }, digest: null }, limits).view;
+  }
+  assert.ok(v.record.unchangedRounds >= limits.stuckRounds, 'a null digest still accumulates');
+  assert.equal(v.record.status, 'blocked', 'so an unwatchable host still escalates');
+
+  // And the evasion this originally fixed must stay fixed: alternating `null` with an *unchanged* digest
+  // cannot hold the counter down either.
+  let w = view();
+  for (let i = 0; i < limits.stuckRounds + 1; i++) {
+    w = send(w, { kind: 'report', now: hours(i + 1), report: { status: 'progress' }, digest: i % 2 === 0 ? 'd' : null }, limits).view;
+  }
+  assert.equal(w.record.status, 'blocked', 'alternating a null digest cannot defeat the detector');
+
+  // Genuine progress still resets it.
+  let g = view();
+  for (let i = 0; i < 6; i++) {
+    g = send(g, { kind: 'report', now: hours(i + 1), report: { status: 'progress' }, digest: `d${i}` }, limits).view;
+  }
+  assert.equal(g.record.unchangedRounds, 0, 'different digests are progress');
+  assert.equal(g.record.status, 'running');
 });
 
 test('closing a goal hangs up the baton', () => {

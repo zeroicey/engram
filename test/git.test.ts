@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { findGitRepository } from '../src/core/git.js';
+import { findGitRepository, workingTreeDigest } from '../src/core/git.js';
 import { main } from '../src/cli.js';
 import { sandbox, sandboxWithoutGit, type Sandbox } from './helpers.js';
 
@@ -89,6 +89,42 @@ test('findGitRepository reports no repository outside a working tree', async () 
   } finally {
     await sb.cleanup();
   }
+});
+
+test('the working-tree digest cannot be moved by a no-op touch', async (t) => {
+  // `workingTreeDigest` is the stuck detector's only input, and it had no test at all — which is how a
+  // detector this central stayed evadable. The digest was `size:mtime`, and mtime is *model-controlled*:
+  // one `touch README.md` per round reset `unchangedRounds` to 0 forever, so the one detector built
+  // because "the model may be looping without progress" could be defeated by a no-op write. Measured:
+  // touching an unchanged file changed the digest.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await makeRepo(sb, 'directory');
+  await sb.write('a.txt', 'hello');
+  const first = await workingTreeDigest(sb.root);
+  assert.notEqual(first, null, 'a git working tree must produce a digest');
+
+  // A pure mtime bump must not count as progress.
+  await new Promise((r) => setTimeout(r, 20));
+  await fs.utimes(path.join(sb.root, 'a.txt'), new Date(), new Date());
+  assert.equal(await workingTreeDigest(sb.root), first, 'touch is not progress');
+
+  // A same-length content change must count — that is what `size` alone missed.
+  await sb.write('a.txt', 'world');
+  assert.notEqual(await workingTreeDigest(sb.root), first, 'an equal-length edit is progress');
+});
+
+test('the working-tree digest ignores the engine own bookkeeping', async (t) => {
+  // `.ai/goal` is rewritten by the very transition that reads the digest, so including it pinned
+  // `unchangedRounds` at 0 in production while the tests (which inject a literal digest) stayed green.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await makeRepo(sb, 'directory');
+  await sb.write('a.txt', 'hello');
+  await sb.write('.ai/goal/g/goal.json', '{"version":1}');
+  const first = await workingTreeDigest(sb.root);
+  await sb.write('.ai/goal/g/goal.json', '{"version":1,"updatedAt":"later"}');
+  assert.equal(await workingTreeDigest(sb.root), first, 'the engine writing its own record is not progress');
 });
 
 test('init refuses outside git and writes nothing at all', async () => {

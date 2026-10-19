@@ -69,6 +69,14 @@ export async function findGitRepository(start: string): Promise<GitCheck> {
  * Returns `null` when the host cannot see a working tree — and `null` must never be read as
  * "unchanged", or every round on a non-git project would look stuck.
  */
+/**
+ * Above this size a file contributes its size only, not a content hash.
+ *
+ * The digest runs on every `goal_report`, so it must stay cheap: reading a 200 MB build artifact on each
+ * report would cost more than the evasion it closes. A stuck detector is looking at source files.
+ */
+const CONTENT_HASH_MAX_BYTES = 512 * 1024;
+
 export async function workingTreeDigest(root: string, maxEntries = 20_000): Promise<string | null> {
   const check = await findGitRepository(root);
   const repositoryRoot = check.repositoryRoot;
@@ -104,7 +112,22 @@ export async function workingTreeDigest(root: string, maxEntries = 20_000): Prom
       if (!e.isFile()) continue;
       try {
         const st = await fs.stat(full);
-        parts.push(`${path.relative(repositoryRoot, full)}:${st.size}:${Math.floor(st.mtimeMs)}`);
+        // Content, not just size+mtime. Size alone misses an equal-length edit, and mtime is
+        // model-controlled input: `touch README.md` (or any formatter that rewrites an unchanged file)
+        // bumped the mtime and reset `unchangedRounds` to 0 on every report, so the stuck detector — which
+        // exists precisely because a model may be looping without progress — could be defeated by one
+        // no-op write per round. Measured: touch on an unchanged file changed the digest.
+        //
+        // The cost is reading the bytes we were already stat-ing. Files above CONTENT_HASH_MAX_BYTES keep
+        // the cheap fields: a multi-megabyte artifact is not what a stuck detector is watching, and
+        // reading the whole tree on every report would be a worse trade than the evasion it closes.
+        const rel = path.relative(repositoryRoot, full);
+        if (st.size <= CONTENT_HASH_MAX_BYTES) {
+          const body = await fs.readFile(full);
+          parts.push(`${rel}:${st.size}:${hash(body.toString('latin1'))}`);
+        } else {
+          parts.push(`${rel}:${st.size}:big`);
+        }
       } catch {
         /* a file that vanished mid-walk is not a change worth reporting */
       }

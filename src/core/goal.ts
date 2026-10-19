@@ -769,12 +769,20 @@ function onProgress(
   //   model that alternated ``digest: null`` with real reports could hold `unchangedRounds` at 0
   //   forever, and on a non-git host the detector could never accumulate at all. A missing digest is
   //   not an unchanged digest — and it is not progress either. Leave the count alone.
+  //
+  // A `null` digest counts as an unchanged round, not as a frozen counter. Leaving the counter alone was
+  // the first fix for the opposite bug (a model alternating `null` with real digests held it at 0), but it
+  // replaced one hole with another: on a host that can never compute a digest — a non-git project, or an
+  // adapter without working-tree access — the detector measured nothing at all. Measured: twelve progress
+  // reports with `digest: null` left `unchangedRounds` at 0 against a `stuckRounds` ceiling of 5.
+  //
+  // The honest reading of "I cannot see a working tree" is "I cannot confirm progress", and a detector
+  // that cannot confirm progress must still be bounded — otherwise the one host where it matters most
+  // (no git) is the one where it is silently disabled.
   const unchangedRounds =
-    digest === null
-      ? released.unchangedRounds
-      : digest === released.lastDigest && released.lastDigest !== null
-        ? released.unchangedRounds + 1
-        : 0;
+    digest === null || (digest === released.lastDigest && released.lastDigest !== null)
+      ? released.unchangedRounds + 1
+      : 0;
   const patch: Partial<GoalRecord> = {
     status: 'running',
     wake: null,
@@ -939,7 +947,12 @@ function onVerdict(
     );
   }
 
-  const unchanged = digest !== null && record.lastDigest !== null && digest === record.lastDigest;
+  // Same rule as `onProgress`: a digest the host could not compute is "progress unconfirmed", which counts
+  // toward the stuck ceiling rather than freezing it. Measured: ten failed verdicts with `digest: null`
+  // left `unchangedRounds` at 0, so "claim done → gate fails → claim done" — the unbounded loop this
+  // branch exists to bound — ran forever on any host without a working-tree view.
+  const unchanged =
+    digest === null || (record.lastDigest !== null && digest === record.lastDigest);
   const unchangedRounds = unchanged ? record.unchangedRounds + 1 : record.unchangedRounds;
 
   // A failed verdict leaves the wait behind, so it must retire it — this was the one transition that
