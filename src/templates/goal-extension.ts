@@ -277,7 +277,16 @@ export default function (pi) {
       armedToken = null;
       const res = eventWithSession("poll", ["--token", effect.token], session);
       if (!res) {
+        // A CLI that is momentarily unavailable (a binary on a network path, a non-zero exit with no
+        // output, unparseable JSON) must not end this wait's watcher. 'poll' is a *peek* — the engine
+        // consumed nothing, the wait is still latched — but this function cleared the timer and the token
+        // above, so returning here left the goal 'waiting' with no timer in this process and no token to
+        // re-arm with. The liveness deadline only escalates when the host *asks*, so nothing would ever
+        // ask again until a 'session_start'. That is the exact failure the file's own comment forbids:
+        // never a wait with nothing watching it. Re-arm and ask again instead.
         warnUnreachable(pi);
+        armedToken = effect.token;
+        hop(WAKE_POLL_MS);
         return;
       }
       const ready = Array.isArray(res.effects)
@@ -342,7 +351,11 @@ export default function (pi) {
         armedToken = null;
         const res = eventWithSession("reconcile", [], session);
         if (!res) {
+          // Same rule as 'ask': a failed reconcile must not leave the deadline unwatched. The engine
+          // still holds the latched wait, so keep asking until one of the two answers arrives.
           warnUnreachable(pi);
+          armedToken = effect.token;
+          hop(WAKE_POLL_MS);
           return;
         }
         safeNotify(pi, res.notify);

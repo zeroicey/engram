@@ -124,9 +124,39 @@ const STATUS_LINE_RE = /^[^\S\n]*\**[^\S\n]*(?:status|state)\**[^\S\n]*:[^\S\n]*
  *
  * Exported so `/audit` and tests can check a decision without loading the whole bank.
  */
+/**
+ * The first match of `re` on a line that is **not inert** (not inside a fence or an HTML comment).
+ *
+ * `titleOf()` was deliberately switched to the inert-aware `contentLines()` because a fenced example was
+ * being read as the real heading. The status, severity and `Updated` lookups were left on the raw text, so
+ * the same class of bug survived in three more places: a template-shaped example *above* the real header
+ * won, because these regexes are `m`-anchored over the whole document and the first match wins.
+ */
+function firstInertAware(re: RegExp, content: string): RegExpExecArray | null {
+  const source = re.source.replace(/^\^/, '^');
+  const flags = re.flags.includes('m') ? re.flags : `${re.flags}`;
+  for (const line of contentLines(content)) {
+    if (line.inert) continue;
+    const one = new RegExp(source, flags.replace('g', ''));
+    const m = one.exec(line.text);
+    if (m) return m;
+  }
+  return null;
+}
+
 export function decisionStatus(content: string): DecisionStatus {
-  const header = STATUS_LINE_RE.exec(content)?.[1] ?? '';
-  const scope = header || content;
+  // The status line, read from the **non-inert** lines only. `STATUS_LINE_RE` over the raw text matched
+  // inside fences and HTML comments, so a decision whose body documents the template shape
+  // (a fenced `Status: 💭 PROPOSAL`) was published as an open proposal even though its real header said
+  // ACCEPTED — dropped from BINDING, and reported by `doctor` as a stale proposal.
+  const header = firstInertAware(STATUS_LINE_RE, content)?.[1] ?? '';
+  // **No `|| content` fallback.** It re-introduced exactly the bug the header lookup exists to fix: a file
+  // with no status line at all was classified from ordinary English prose. Measured: a decision titled
+  // "Pick A over B" whose body says "We rejected option B because it was slower" loaded as REJECTED — a
+  // tombstone, excluded from BINDING and from the live count — and "This was accepted after review" would
+  // have promoted an unratified note into BINDING. A file with no status line is UNKNOWN, which is what
+  // `doctor`'s `decisions/unclassified` finding exists to report.
+  const scope = header;
   const m =
     /💭\s*PROPOSAL|✅\s*ACCEPTED|🪦\s*(?:REJECTED|SUPERSEDED)|\b(PROPOSAL|ACCEPTED|REJECTED|SUPERSEDED)\b/i.exec(
       scope,
@@ -162,7 +192,10 @@ const SEVERITY_LINE_RE = /^[^\S\n]*\**\s*severity\**\s*:[^\S\n]*(.*)$/im;
  * line instead of in a `Severity:` field — the template is a shape, not a requirement.
  */
 function severityOf(content: string): PitfallEntry['severity'] {
-  const header = SEVERITY_LINE_RE.exec(content)?.[1] ?? content;
+  // Inert-aware for the header capture (a fenced `Severity: 🟡 low` above the real `**Severity:** 🔴 high`
+  // made a high pitfall load as low, which then sorted it first out of the budget). The whole-document
+  // fallback stays as-is: it only matches the emoji, so a quoted example in prose cannot reach it.
+  const header = firstInertAware(SEVERITY_LINE_RE, content)?.[1] ?? content;
   const m = /🔴\s*high|🟠\s*medium|🟡\s*low/i.exec(header);
   if (!m?.[0]) return 'unknown';
   if (/high/i.test(m[0])) return 'high';
@@ -357,9 +390,11 @@ function extractBlockers(lines: string[]): string[] {
 }
 
 export function parseCurrentTask(content: string): CurrentTask {
-  const headerLine = content.split('\n').find((l) => STATUS_LINE_RE.test(l)) ?? '';
-  const status = cleanInline(STATUS_LINE_RE.exec(headerLine)?.[1] ?? '').split(/\s+·\s+/)[0] ?? '';
-  const updatedM = /\*{0,2}Updated\*{0,2}\s*:?\s*([^\n]+)/i.exec(content);
+  // Both read from non-inert lines. A `**Status:**` or `Updated:` shown *inside a fence* — which every
+  // project's own docs do when they document the template — used to win over the real header above it,
+  // because these were scanned over the raw text and the first match takes the file.
+  const status = cleanInline(firstInertAware(STATUS_LINE_RE, content)?.[1] ?? '').split(/\s+·\s+/)[0] ?? '';
+  const updatedM = firstInertAware(/\*{0,2}Updated\*{0,2}\s*:?\s*([^\n]+)/i, content);
   const blockers = extractBlockers(section(content, 'Blockers'));
   const task: Omit<CurrentTask, 'missing' | 'empty'> = {
     status: cleanInline(status),

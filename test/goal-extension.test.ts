@@ -192,6 +192,22 @@ test('the goal_report handler treats an engine refusal as an error, not as succe
   assert.match(reportHandler, /isError: true/, 'and surfaced as an error result');
 });
 
+test('a momentarily unavailable CLI does not leave a latched wait unwatched', () => {
+  // `ask()` cleared the timer and the armed token, then on a null CLI answer (`call()` returns null for a
+  // missing binary, a non-zero exit with no stdout, or unparseable JSON) it merely warned and returned.
+  // `poll` is a *peek* — the engine consumed nothing, so the wait is still latched — but this process now
+  // had no timer and no token, so nothing would ever ask again until a `session_start`. The engine's
+  // liveness deadline only escalates when the host asks, so the goal sat `waiting` with no watcher, which
+  // is the one thing this file's own comments forbid. Same hole in `tick`'s deadline-reconcile branch.
+  const src = goalExtensionSource({ engramBin: 'engram', version: '0.5.0', reminderPercent: 85 });
+  const ask = src.slice(src.indexOf('function ask()'));
+  const askBody = ask.slice(0, ask.indexOf('const ready ='));
+  assert.match(askBody, /if \(!res\)[\s\S]*armedToken = effect\.token;[\s\S]*hop\(/, 'a failed poll must re-arm');
+  const tick = src.slice(src.indexOf('function tick()'));
+  const deadline = tick.slice(0, tick.indexOf('if (condition.kind === "time")'));
+  assert.match(deadline, /if \(!res\)[\s\S]*armedToken = effect\.token;[\s\S]*hop\(/, 'a failed reconcile must re-arm too');
+});
+
 test('warnUnreachable cannot throw out of a timer callback', () => {
   // `warnUnreachable` is reachable from `tick`/`hop`/`ask` — timer callbacks that outlive the runtime
   // that armed them. It called `notify` (unguarded `pi.sendMessage`), which is the call that throws

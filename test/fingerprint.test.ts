@@ -125,6 +125,37 @@ test('a ratified decision is never reported as an open proposal', () => {
   assert.equal(decisionStatus('no status here'), 'UNKNOWN');
 });
 
+test('a decision with no status line is UNKNOWN, never classified from prose', () => {
+  // `decisionStatus` fell back to the whole document when no status line matched (`header || content`),
+  // which re-introduced the very bug the header lookup exists to fix. Measured: a decision titled "Pick A
+  // over B" whose body says "We rejected option B because it was slower" loaded as REJECTED — a tombstone,
+  // silently excluded from BINDING and from the live count — and "This was accepted after review" would
+  // have promoted an unratified note into BINDING. A file with no status is UNKNOWN, which is exactly what
+  // doctor's decisions/unclassified finding is for.
+  assert.equal(decisionStatus('# Pick A over B\n\nWe rejected option B because it was slower.\n'), 'UNKNOWN');
+  assert.equal(decisionStatus('# X\n\nThis was accepted after review.\n'), 'UNKNOWN');
+});
+
+test('a fenced example of the status line does not beat the real header', () => {
+  // These regexes are `m`-anchored over the whole document and the first match wins, so a template-shaped
+  // example *above* the real header won. Every project's own docs quote the template, so this is a
+  // realistic file, not a fuzzed one. `titleOf` was already inert-aware; three more lookups were not.
+  const fencedProposalThenAccepted = [
+    '# X',
+    '',
+    '```md',
+    '**Status:** 💭 PROPOSAL',
+    '**Updated:** 1999-01-01',
+    '```',
+    '',
+    '**Status:** ✅ ACCEPTED · **Updated:** 2026-10-19',
+    '',
+  ].join('\n');
+  assert.equal(decisionStatus(fencedProposalThenAccepted), 'ACCEPTED');
+  const task = parseCurrentTask(fencedProposalThenAccepted.replace('# X', '# Current task'));
+  assert.equal(task.updated, '2026-10-19', 'and Updated is read from the real header too');
+});
+
 test('the word Status in prose is not mistaken for the status header', () => {
   const content = [
     '# Current task',
