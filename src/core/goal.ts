@@ -995,6 +995,41 @@ function onWake(record: GoalRecord, now: string, token: string, reason: string):
  * Anything else is a different pane, and is refused exactly as before: an intruder opening the same
  * project must not be able to adopt someone's goal. And a *closed* goal is never adopted.
  */
+/**
+ * Is `candidate` a child agent session running *inside* the pane that holds the baton?
+ *
+ * `samePane` adoption exists for one case: a killed pi comes back as a **new session file** on the same
+ * pane, and refusing it left the latch armed with nobody to wake it. But `HERDR_PANE_ID` is an
+ * **inherited environment variable**, so every child a holder spawns reports the holder's pane while
+ * carrying its own `PI_SESSION_FILE`. Adopting on the pane alone therefore handed the baton to a
+ * reviewer subagent 330 ms after it started — and because `wake`/`poll`/`report` all refuse an identified
+ * non-holder, the holder's own `goal_report` was then refused by the goal it was driving. Measured on
+ * this repository: six parallel review children, every one of them reporting `w13:pE`.
+ *
+ * The two cases are distinguishable by *where the file sits*, which no child can fake and no env var
+ * reports:
+ *
+ * - a restart is a new session in the **same** directory — `…/<parentId>.jsonl`
+ * - a child is nested **beneath** the holder — `…/<parentId>/<childId>/run-0/session.jsonl`
+ *
+ * So a nested path is never a restart. It keeps the same pane and is still the holder's own process
+ * tree, so it is refused rather than treated as an intruder from another pane: the pane-level
+ * `schedule-wake` it would receive is an effect only its parent can act on.
+ *
+ * Written without `node:path` on purpose: this module has no imports at all, which is a property worth
+ * more than a `dirname` call. Session paths are absolute and `/`-separated by construction (pi writes
+ * them), and `.`/`..` segments cannot appear in a path pi generated.
+ */
+function isNestedSession(holder: string, candidate: string): boolean {
+  const cut = holder.lastIndexOf('/');
+  if (cut <= 0) return false;
+  const parent = holder.slice(0, cut);
+  if (candidate === holder || !candidate.startsWith(parent + '/')) return false;
+  // Deeper than a sibling file: the remainder must still hold a separator. `/a/one.jsonl` and
+  // `/a/two.jsonl` are siblings (a restart); `/a/one.jsonl` and `/a/x/run-0/s.jsonl` are not.
+  return candidate.slice(parent.length + 1).includes('/');
+}
+
 function onReconcile(
   record: GoalRecord,
   now: string,
@@ -1010,8 +1045,11 @@ function onReconcile(
   const sameHolder = sessionPath === undefined || holder === undefined || holder === sessionPath;
   const samePane =
     paneId !== undefined && record.baton?.paneId !== null && record.baton?.paneId === paneId;
-  const adopts = record.baton === null || sameHolder || samePane;
-  if (record.baton !== null && sessionPath !== undefined && !sameHolder && samePane) {
+  // A child agent of the holder shares its pane by inheritance but holds a *nested* session file. It
+  // must not adopt; see `isNestedSession` for why the path, and not the pane, is the discriminator.
+  const nested = holder !== undefined && sessionPath !== undefined && isNestedSession(holder, sessionPath);
+  const adopts = record.baton === null || sameHolder || (samePane && !nested);
+  if (record.baton !== null && sessionPath !== undefined && !sameHolder && samePane && !nested) {
     adopted = { ...record, baton: { sessionPath, paneId: paneId ?? record.baton.paneId, startedAt: now } };
   } else if (record.baton === null && sessionPath !== undefined) {
     // A goal created outside a session and driven for the first time: claim it, as `run-started` would.

@@ -658,6 +658,47 @@ test('a restarted session in the same pane adopts the goal and re-arms the wait'
   assert.equal(late.record.baton?.sessionPath, restarted, 'and the dead holder has been replaced');
 });
 
+test('a subagent child inherits the pane and must not adopt the goal', () => {
+  // Measured on this repository, 2026-10-19: six parallel review children were launched from a session
+  // holding a goal. `HERDR_PANE_ID` is an **inherited environment variable**, so all six reported the
+  // holder's pane (`w13:pE`) while carrying their own `PI_SESSION_FILE` — and `samePane` adoption took
+  // that as "a restarted pi on the same pane". The baton moved to a reviewer 330 ms after it started,
+  // and the holder's own `goal_report` was then refused by the goal it was driving, because
+  // `wake`/`poll`/`report` all refuse an identified non-holder while `reconcile` adopted.
+  //
+  // The discriminator is the path, not the pane: a restart is a sibling file, a child is nested.
+  const armed = record({
+    status: 'waiting',
+    baton: { sessionPath: '/s/2026-10-19T07-41-21-205Z_01a1531b.jsonl', paneId: 'w13:pE', startedAt: T0 },
+    wake: { token: 'wake-1', condition: { kind: 'time', seconds: 600 }, requestedAt: T0, deadlineAt: hours(24) },
+  });
+  const child = '/s/2026-10-19T07-41-21-205Z_01a1531b/9c73a805-f0f1-4c65/run-0/session.jsonl';
+  const r = reduce(
+    view(armed),
+    { kind: 'reconcile', now: hours(1), sessionPath: child, paneId: 'w13:pE' },
+    DEFAULT_LIMITS,
+  );
+  assert.equal(
+    r.record.baton?.sessionPath,
+    '/s/2026-10-19T07-41-21-205Z_01a1531b.jsonl',
+    'the child must not take the baton',
+  );
+  assert.equal(r.record.status, 'waiting', 'and the wait is untouched');
+  // It shares the pane, so it is not an intruder and must not be handed a pane-level `schedule-wake`
+  // it cannot act on; `ignore` is the honest answer.
+  assert.deepEqual(kinds(r.effects), ['ignore']);
+
+  // The restart this exception exists for still adopts: same pane, sibling file, not nested.
+  const restarted = { ...armed, baton: { sessionPath: '/s/abc/def.jsonl', paneId: 'w13:pE', startedAt: T0 } };
+  const ok = reduce(
+    view(restarted),
+    { kind: 'reconcile', now: hours(1), sessionPath: '/s/abc/ghi.jsonl', paneId: 'w13:pE' },
+    DEFAULT_LIMITS,
+  );
+  assert.equal(ok.record.baton?.sessionPath, '/s/abc/ghi.jsonl', 'a sibling restart still adopts');
+  assert.deepEqual(kinds(ok.effects), ['schedule-wake']);
+});
+
 test('an unclaimed goal is claimed by the first session that reconciles it', () => {
   const fresh = record({ baton: null, status: 'running' });
   const r = reduce(view(fresh), { kind: 'reconcile', now: hours(1), sessionPath: '/sessions/first.jsonl', paneId: 'w13:p1' }, DEFAULT_LIMITS);
