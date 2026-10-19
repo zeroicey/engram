@@ -116,7 +116,12 @@ function call(args) {
 function warnUnreachable(pi) {
   if (!unreachable || warned) return;
   warned = true;
-  notify(
+  // safeNotify, not notify. This is reachable from a timer callback (tick -> hop/ask -> a failed CLI
+  // call), and 'pi.sendMessage' is the exact call that throws 'This extension ctx is stale' in the
+  // runtime a timer outlives. An uncaught throw from a setTimeout callback kills the host process — the
+  // measured crash 'deliver()' was written to prevent. The guard existed on the delivery path and not
+  // on the warning path, which is this project's most expensive recurring shape.
+  safeNotify(
     pi,
     "engram-goal: cannot run " + ENGRAM + ". Set ENGRAM_BIN or put engram on PATH — the goal engine is not recording anything.",
   );
@@ -529,6 +534,20 @@ export default function (pi) {
         // A validation message that names the right usage teaches the model in one turn; a bare
         // failure makes it guess.
         return { content: [{ type: "text", text: res.reason || "invalid goal report" }], details: undefined, isError: true };
+      }
+      // An engine REFUSAL is not a success, and 'ok' cannot say so: 'responseFromEffects' sets ok true
+      // whenever the call itself worked, so an 'ignore' effect (the goal is closed, or this session is
+      // not the baton holder) arrived here as a normal report and the refusal survived only as prose in
+      // 'content' — which a model reads as success. That is the "an effect a host cannot see is a
+      // decision the engine did not make" shape, from the host's side. Surface it as an error result so
+      // the model knows the report did not land.
+      const refused = (res.effects || []).find(function (e) { return e.kind === "ignore"; });
+      if (refused) {
+        return {
+          content: [{ type: "text", text: "goal report refused: " + (refused.reason || "the engine ignored it") }],
+          details: undefined,
+          isError: true,
+        };
       }
       // A report is where a wait is armed, so the effects must be applied here and not only in the
       // lifecycle hooks: nothing else in this file ever sees a 'schedule-wake'.

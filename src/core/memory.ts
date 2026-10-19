@@ -202,7 +202,15 @@ function contentLines(content: string): ContentLine[] {
     const inFence = fence !== null || isDelimiter;
     // A comment *opener* marks its own line inert too: the template's placeholder prose starts
     // with `<!--` on that line, and it was surfacing as the project's goal and next action.
-    const opensComment = !isDelimiter && !inComment && line.includes('<!--');
+    // Fence delimiters and fence *body* are literal text: a fenced example that quotes an HTML comment
+    // opener (this repository's own docs quote `<!-- engram:contract:start` to talk about it) must not
+    // start a real comment. That was a state nothing could leave — `opensComment` suppressed `marker`,
+    // so the closing fence was never recognised, `fence` stayed set forever, and every later line became
+    // inert. Measured: a CURRENT_TASK.md with a fence containing `<!-- engram:contract:start` lost its
+    // `## Next action` heading entirely; `doctor` reported the heading MISSING although it was present,
+    // and the digest silently dropped `next:`.
+    const inFenceBody = fence !== null && !isDelimiter;
+    const opensComment = !isDelimiter && !inFenceBody && !inComment && line.includes('<!--');
     const inert = inFence || inComment || isDelimiter || opensComment;
 
     if (fence !== null) {
@@ -211,7 +219,7 @@ function contentLines(content: string): ContentLine[] {
       fence = { char: marker[0]!, len: marker.length };
     }
 
-    if (!isDelimiter) {
+    if (!isDelimiter && !inFenceBody) {
       // One line can both open and close a comment (`<!-- ... -->`), and the old state machine set
       // `inComment = true` without ever checking the same line for the closer — so everything after a
       // **single-line** comment was treated as comment body and silently disappeared. Measured: the

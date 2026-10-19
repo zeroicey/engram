@@ -165,6 +165,46 @@ test('loadMemory classifies decisions, ignores templates, sorts by date', async 
   assert.deepEqual(bank.skills, ['handoff.md']);
 });
 
+test('a fence that quotes an HTML comment opener does not swallow the rest of the file', async (t) => {
+  // This repository's own docs quote `<!-- engram:contract:start` to talk *about* the marker, so a
+  // CURRENT_TASK.md containing that text inside a fenced example is a realistic file, not a fuzzed one.
+  // The inert-line tracker computed `opensComment` without checking whether the line was fence body, so
+  // the quote started a real comment; that suppressed the fence-delimiter detection, so the closing ```
+  // was never seen and `fence` stayed set forever. Every subsequent line was inert: `## Next action` and
+  // `## Code state` became invisible, `doctor` reported them MISSING although both were present, and the
+  // digest silently dropped `next:` — a state nothing could leave.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await sb.write(
+    '.ai/CURRENT_TASK.md',
+    [
+      '# Current task',
+      '',
+      '**Status:** x',
+      '',
+      '## Goal',
+      '',
+      'the real goal',
+      '',
+      '```md',
+      '<!-- engram:contract:start',
+      '```',
+      '',
+      '## Next action',
+      '',
+      'do the thing',
+      '',
+      '## Code state',
+      '',
+      'branch main',
+      '',
+    ].join('\n'),
+  );
+  const bank = await loadMemory(sb.root);
+  assert.equal(bank.currentTask?.nextAction, 'do the thing', 'the heading after the fence is still read');
+  assert.notEqual(bank.currentTask?.codeState, undefined, 'and so is Code state');
+});
+
 test('loadMemory on a repo without .ai/ reports non-existence, not an error', async (t) => {
   const sb = await sandbox();
   t.after(() => sb.cleanup());

@@ -180,6 +180,30 @@ test('a wake that cannot be delivered is not reported as delivered', () => {
   assert.match(wakeBranch, /return;/, 'the failure path returns before the happy-path notify');
 });
 
+test('the goal_report handler treats an engine refusal as an error, not as success', () => {
+  // `responseFromEffects` sets `ok: true` whenever the call itself worked, so an `ignore` effect — the
+  // goal is closed, or this session is not the baton holder — arrived at the tool handler as a normal
+  // report. The refusal survived only as prose in `content`, which a model reads as success. Measured:
+  // a stranger's report returns `{"ok":true,"effects":[{"kind":"ignore","reason":"not the baton holder…"}]}`.
+  const src = goalExtensionSource({ engramBin: 'engram', version: '0.5.0', reminderPercent: 85 });
+  const handler = src.slice(src.indexOf('async execute(_id, params'));
+  const reportHandler = handler.slice(0, handler.indexOf('const parts = ['));
+  assert.match(reportHandler, /find\(function \(e\) \{ return e\.kind === "ignore"; \}\)/, 'the ignore effect must be read');
+  assert.match(reportHandler, /isError: true/, 'and surfaced as an error result');
+});
+
+test('warnUnreachable cannot throw out of a timer callback', () => {
+  // `warnUnreachable` is reachable from `tick`/`hop`/`ask` — timer callbacks that outlive the runtime
+  // that armed them. It called `notify` (unguarded `pi.sendMessage`), which is the call that throws
+  // "This extension ctx is stale"; an uncaught throw from a setTimeout callback kills the host process.
+  // `deliver()` already used `safeNotify` for exactly this reason, one branch over.
+  const src = goalExtensionSource({ engramBin: 'engram', version: '0.5.0', reminderPercent: 85 });
+  const fn = src.slice(src.indexOf('function warnUnreachable'));
+  const body = fn.slice(0, fn.indexOf('\n}') + 2);
+  assert.ok(!/(?<!safe)notify\(/.test(body), `warnUnreachable must not call notify() unguarded:\n${body}`);
+  assert.match(body, /safeNotify\(/);
+});
+
 test('the generated extension reports an unreachable binary instead of silently doing nothing', () => {
 
   const src = goalExtensionSource({ engramBin: 'engram', version: '0.5.0', reminderPercent: 85 });

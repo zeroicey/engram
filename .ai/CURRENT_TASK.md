@@ -38,8 +38,8 @@ _Completed milestones: 44 archived in `.ai/sessions/_milestone-log-archive.md` â
 
 ## Code state
 
-Branch `main`. 33 modules, 18 suites, 351 tests, zero runtime deps. One adapter (`pi`), config v2 with
-`goal` on. Module map, layering and the L2 protocol: `.ai/ARCHITECTURE.md`.
+Branch `main`. 33 modules, 19 suites, 360 tests, zero runtime deps. One adapter (`pi`), config v2 with
+`goal` on. Module map and layering: `.ai/ARCHITECTURE.md`.
 
 ## Blockers
 
