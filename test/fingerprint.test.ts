@@ -674,3 +674,43 @@ test('REGRESSION an identifier with an underscore survives the fingerprint verba
   // Emphasis is still decoration and must still be stripped.
   assert.ok(!/\*/.test(text.split('POINTERS')[0] ?? ''), 'emphasis markers are still removed');
 });
+
+test('REGRESSION a pitfall count cap is named, not silently applied', async (t) => {
+  // `pitfallN` defaults to 2 and rendered exactly two lines for a bank holding eleven cases, with no
+  // `omitted:` notice — because that notice was built only from the sections the *byte budget*
+  // dropped. A count limit is the same loss with a different cause, and it is the worse one: the
+  // digest silently reads like a project that has two pitfalls, and `--json` agreed with it.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  for (let i = 0; i < 5; i++) {
+    await sb.write(
+      `.ai/pitfalls/cases/case-${i}.md`,
+      `# pitfall number ${i}\n\n**Severity:** 🟠 medium · **Date:** 2026-10-0${i + 1}\n\nSymptom.\n`,
+    );
+  }
+  const out = await runCli(['dump', '--root', sb.root, '--json']);
+  const data = JSON.parse(out.out) as { pitfalls: unknown[]; pitfallsTotal: number };
+  // `seedBank` ships its own pitfall, so the total is 6 rather than 5 — asserted against the field's
+  // own meaning (total >= rendered, difference named) instead of a fixture-dependent constant.
+  assert.equal(data.pitfalls.length, 2, 'the rendered list is still bounded');
+  assert.equal(data.pitfallsTotal, 6, 'and the total is reported, so "partial" is knowable');
+  assert.ok(data.pitfallsTotal > data.pitfalls.length, 'the bank holds more than the digest shows');
+
+  const md = await runCli(['dump', '--root', sb.root]);
+  const hidden = data.pitfallsTotal - data.pitfalls.length;
+  assert.match(md.out, new RegExp(`… ${hidden} more`), 'the markdown must name what the cap left out');
+  assert.match(md.out, /\.ai\/pitfalls\/cases\//, 'and say where to look');
+});
+
+test('a bank whose pitfalls all fit says nothing about omissions', async (t) => {
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  await sb.write(
+    '.ai/pitfalls/cases/only-one.md',
+    '# only one\n\n**Severity:** 🟡 low · **Date:** 2026-10-01\n\nSymptom.\n',
+  );
+  const md = await runCli(['dump', '--root', sb.root]);
+  assert.ok(!/more — \.ai\/pitfalls/.test(md.out), 'no phantom omission line when nothing was capped');
+});

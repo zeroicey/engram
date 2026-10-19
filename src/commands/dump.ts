@@ -49,6 +49,7 @@ export async function runDump(opts: DumpOptions): Promise<DumpResult> {
         decisions: [],
         sessions: [],
         pitfalls: [],
+        pitfallsTotal: 0,
         skills: [],
         activeGoal: null,
         bytes: 0,

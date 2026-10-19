@@ -49,6 +49,14 @@ export interface Fingerprint {
     decisions: Array<{ date: string; status: DecisionEntry['status']; title: string; file: string }>;
     sessions: Array<{ date: string; title: string; file: string }>;
     pitfalls: Array<{ title: string; severity: string; file: string }>;
+    /**
+     * How many pitfall cases the bank holds, vs how many `pitfalls` above could be shown.
+     *
+     * Without it a JSON consumer saw a two-element array and had no way to learn that nine more
+     * existed — the same "silently partial" state the markdown's `omitted:` notice exists to prevent,
+     * one output channel over.
+     */
+    pitfallsTotal: number;
     skills: string[];
     /** The live goal, when the project has one. Distinct from `goal`, which is CURRENT_TASK's prose. */
     activeGoal: {
@@ -232,11 +240,19 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
   }
 
   if (pitfalls.length) {
-    sections.push({
-      heading: 'PITFALLS',
-      lines: pitfalls.map((p) => `  ⚠ ${trimTo(p.title, 70)} → .ai/pitfalls/cases/${p.file}`),
-      priority: 3,
-    });
+    const lines = pitfalls.map((p) => `  ⚠ ${trimTo(p.title, 70)} → .ai/pitfalls/cases/${p.file}`);
+    // Name what the CAP left out, exactly as the budget path names what the budget left out.
+    //
+    // `pitfallN` defaults to 2, so a bank with eleven cases rendered two lines and said nothing about
+    // the other nine — the artefact read exactly like a project that has two pitfalls. That is the
+    // single failure the `omitted:` notice exists to prevent, and it was guarded only on the byte
+    // path: a *count* limit is the same loss with a different cause. Measured: a 13-decision,
+    // 11-pitfall bank rendered `PITFALLS` with 2 lines, no notice, and `--json` reporting
+    // `pitfalls: 2` — both agreeing on a number that was wrong.
+    if (bank.pitfalls.length > pitfalls.length) {
+      lines.push(`  … ${bank.pitfalls.length - pitfalls.length} more — .ai/pitfalls/cases/`);
+    }
+    sections.push({ heading: 'PITFALLS', lines, priority: 3 });
   }
 
   const skillNames = bank.skills.map((s) => s.replace(/\.md$/, ''));
@@ -298,6 +314,7 @@ export function buildFingerprint(bank: MemoryBank, opts: FingerprintOptions = {}
         severity: p.severity,
         file: `.ai/pitfalls/cases/${p.file}`,
       })),
+      pitfallsTotal: bank.pitfalls.length,
       skills: bank.skills.map((s) => `/${s.replace(/\.md$/, '')}`),
       activeGoal: goal
         ? {
