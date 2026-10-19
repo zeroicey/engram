@@ -246,8 +246,11 @@ other's type.
 
 Next action, in order:
 
-1. **A real hour-long unattended run is still the untested thing — but the shape of the test is now
-   known, and a two-wait version has passed.** Probe D: three legs, two real 120 s waits, gate
+1. **A real hour-long unattended run is still the untested thing — but the shape is known and both a
+   two-wait version and a single 30-minute version have passed.** Probe E: leg 1 → **one 30-minute
+   wait** → leg 2 → `done` on `2 command(s) exited 0`, closed in ~33 minutes, `wakeSeq: 1`, the agent
+   genuinely idle the whole time. What is left is only *surviving a runtime restart* mid-wait.
+   Old note: Probe D: three legs, two real 120 s waits, gate
    `npm test && node scripts/legs.js --require 3` → `wake-1` → woken → `wake-2` → woken → `done` on
    `2 command(s) exited 0`, 15 tests, three commits across two ~2-minute gaps. What is left is *duration*,
    not shape: scale `wakeOnSeconds` up and see whether anything breaks when a wait is longer than a

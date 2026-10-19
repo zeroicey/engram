@@ -74,6 +74,29 @@ Two lessons, and the first is a rule:
 - **A guard whose input the instructions never mention is dead on arrival.** Ask of any check: *is
   producing its input part of the task the model was given?*
 
+## The duration case, which was the last unknown
+
+A fifth probe tested the only dimension the others had not: **a wait longer than the work**. Leg 1, then a
+**single 30-minute wait** (`wakeOnSeconds=1800`), then leg 2, with the gate
+`npm test && node scripts/legs.js --require 2`.
+
+- Wait latched `02:06:33Z`; `deadlineAt 04:06:33Z` — the configured `livenessMs: 7200000`, **not** the 24h
+  default. That is the configurable-liveness change doing its job on a real wait.
+- The agent reported `waiting` and then genuinely stopped (`agent_status: done`) — it did not busy-poll, did
+  not sleep in a tool call, and held for 30 minutes of wall clock.
+- The timer fired at `~02:36:5xZ`; the pane came alive, did leg 2, recorded `LEG2-OK`, committed twice and
+  reported `done`. Engine verdict: `2 command(s) exited 0`. Closed `02:37:16Z` — ~33 minutes end to end.
+- `wakeSeq: 1`: one wait, one timer, one wake. Nothing re-armed, nothing double-fired.
+
+What that rules out, concretely: a half-hour wait does not survive as a lost timer, an idle agent does not
+get nudged while waiting, the deadline does not fire early, and a session that stopped completely comes
+back from a `setTimeout` alone.
+
+Still untested: **a wait that spans a pi restart or a herdr restart.** The reducer and `reconcile` handle
+it, and the `terminal_id` measurement says the pane ids survive a server restart, but nobody has parked a
+goal, restarted the runtime and watched the successor's `session_start` re-arm. That is the next honest
+test, not this one.
+
 ## Guard / how to do it again
 
 - A real long-run test is a repo whose **gate** is only satisfiable after a wait plus a second turn —
