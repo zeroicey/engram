@@ -636,3 +636,41 @@ test('a pitfall’s severity comes from its Severity header', async (t) => {
   const entry = bank.pitfalls.find((p) => p.file === '2026-10-01-shape.md');
   assert.equal(entry?.severity, 'medium');
 });
+
+test('REGRESSION an identifier with an underscore survives the fingerprint verbatim', async (t) => {
+  // `cleanInline` stripped every `*`, `_` and backtick as Markdown decoration, so a memory section
+  // naming a real identifier rendered a name that does not exist: `watch_remote.sh` became
+  // `watchremote.sh`, and `p_big` became `pbig`. The pitfall was written and its proposed guard was
+  // not, so the workaround became "write the identifier without underscores" — which is an
+  // instruction to write the wrong name, and on a queue-driven project that is a wrong command.
+  const sb = await sandbox();
+  t.after(() => sb.cleanup());
+  await seedBank(sb);
+  await sb.write(
+    '.ai/CURRENT_TASK.md',
+    [
+      '# Current task',
+      '',
+      '**Status:** 🟡 active · **Updated:** 2026-10-01',
+      '',
+      '## Goal',
+      '',
+      'Ship it',
+      '',
+      '## Next action',
+      '',
+      '1. Re-attach the watcher: `bash watch_remote.sh`, then check `p_big`',
+      '',
+      '## Blockers',
+      '',
+      'none',
+    ].join('\n'),
+  );
+  const out = await runCli(['dump', '--root', sb.root]);
+  const text = out.out;
+  assert.match(text, /watch_remote\.sh/, 'an inline code span keeps its underscores');
+  assert.match(text, /p_big/, 'and so does a bare identifier inside one');
+  assert.ok(!/watchremote\.sh/.test(text), 'the mangled name must be gone');
+  // Emphasis is still decoration and must still be stripped.
+  assert.ok(!/\*/.test(text.split('POINTERS')[0] ?? ''), 'emphasis markers are still removed');
+});

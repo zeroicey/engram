@@ -315,12 +315,34 @@ function section(content: string, heading: string): string[] {
   return out;
 }
 
-const cleanInline = (s: string): string =>
-  s
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/[*_`]/g, '')
+/**
+ * Strip Markdown decoration from one line, **keeping inline code spans intact**.
+ *
+ * `replace(/[*_`]/g, '')` treated every underscore as emphasis, which mangled every identifier a
+ * memory section tried to name: a `CURRENT_TASK.md` line saying ``` `watch_remote.sh` ``` rendered as
+ * `watchremote.sh` — a command that does not exist, handed to the model as the next step. The bug was
+ * recorded (`.ai/pitfalls/cases/fingerprint-strips-underscores.md`) with a proposed fix and no test,
+ * so it shipped; the workaround was "spell identifiers without underscores", which is not a fix, it
+ * is an instruction to write the wrong name.
+ *
+ * Two passes: protect code spans by replacing their delimiters with placeholders, strip emphasis
+ * everywhere else, then restore the span content verbatim. Unpaired backticks still fall through to
+ * the emphasis strip, so a stray marker cannot swallow the rest of the line.
+ */
+const cleanInline = (s: string): string => {
+  const spans: string[] = [];
+  // `\u0000` cannot appear in a memory file (it is not valid text this parser accepts), so it is a
+  // safe placeholder that no `replace` below will touch.
+  const protectedLine = s.replace(/<!--[\s\S]*?-->/g, '').replace(/`([^`]+)`/g, (_m, code: string) => {
+    spans.push(code);
+    return `\u0000${spans.length - 1}\u0000`;
+  });
+  return protectedLine
+    .replace(/[*_]/g, '')
+    .replace(/\u0000(\d+)\u0000/g, (_m, i: string) => spans[Number(i)] ?? '')
     .replace(/\s+/g, ' ')
     .trim();
+};
 
 const stripBullet = (l: string): string =>
   l.replace(/^[-*+]\s+/, '').replace(/^(\[[ xX]\]|✔|✗)\s*/, '').trim();
