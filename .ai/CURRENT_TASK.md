@@ -38,7 +38,7 @@ _Completed milestones: 44 archived in `.ai/sessions/_milestone-log-archive.md` �
 
 ## Code state
 
-Branch `main`. 33 modules, 19 suites, 360 tests, zero runtime deps. One adapter (`pi`), config v2 with
+Branch `main`. 33 modules, 19 suites, 367 tests, zero runtime deps. One adapter (`pi`), config v2 with
 `goal` on. Module map and layering: `.ai/ARCHITECTURE.md`.
 
 ## Blockers
@@ -111,19 +111,21 @@ Branch `main`. 33 modules, 19 suites, 360 tests, zero runtime deps. One adapter 
 
 ## Next action
 
-**This stage: review round 2 → fix → push. No publish, no tag** (the user's machine is being reinstalled;
-the code only has to reach the remote). Full brief, including the review prompt shape that worked:
-[`.ai/sessions/2026-10-19-review-round-2-handoff.md`](sessions/2026-10-19-review-round-2-handoff.md).
+**Review round 2 shipped and pushed** (`8503c9f`, `origin/main` matches, no tag, no publish). Two review
+rounds were wasted first — the `reviewer` agent has **no write tool**, so "report incrementally" could
+never work. Round 3 used `scout`, one file per child, incremental appends, 20-call budget; all six
+delivered. Detail in `.ai/sessions/2026-10-19-review-round-2-shipped-handoff.md`.
 
-1. **Review round 2, on the 25 fixes** (`0799b8f`) — three parallel reviewers, goal engine / host boundary /
-   memory bank. A review of the original code would find what the first round found; the fixes are the thing
-   under suspicion, and this session already shipped a broken convergence loop inside the fix for "the report
-   disagrees with the artefact".
-2. **Fix what it finds**, P0/P1 first, one regression test per finding (the two probes worth keeping: a
-   budget sweep over `1..1800` bytes, and a `loadMemory` severity assertion).
-3. **A local trial in a repository the user picks** — `init`/`sync` → `doctor` → `config --goal on` → one
-   real goal. Expect `doctor` to report errors on the existing adopters; `engram` reports and does not
-   rewrite another project's bank.
-4. **Push `origin main`.** No tag, no publish.
-5. After that: a real multi-hour unattended run, a handoff *during* a wait, `/verify`, and `research`
-   declaring `.ai/sections.json` themselves.
+1. **Salvage the dead reviewers' thinking blocks before relaunching.** They held the findings and lost only
+   the citations. Two of the three defects fixed before round 3 came from there, including the P0 that was
+   biting this very session: `HERDR_PANE_ID` is inherited, so `samePane` adoption handed the goal's baton to
+   a review subagent (`.ai/pitfalls/cases/a-subagent-inherits-the-pane-and-steals-the-baton.md`).
+2. **13 defects fixed**, each with a regression test that reproduces the measured failure. The P0: `verdict`
+   and `close` had no baton guard, so `engram goal check` from any shell could close anyone's goal as
+   *verified complete*. Also: a corrupted config silently deleted the goal carrier (round 1's P0 by another
+   route); `init` wrote through a dangling symlink to outside `--root`; `touch` defeated the stuck detector,
+   and on a capability-less host the detector could never fire at all.
+3. **The local trial was waived by the user** ("skip the trial, just push"). Still untried on a real adopter.
+4. Next, in the user's words: a real multi-hour unattended run, a handoff *during* a wait, `/verify`, and
+   `research` declaring `.ai/sections.json` themselves.
+5. **Publish 0.5.0** is still human-only (2FA). The Pi-only break has never been installed by anyone.
